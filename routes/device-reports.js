@@ -19,10 +19,11 @@ router.get('/sessions/:id/report', (req, res) => {
     // Human-readable times
     const fmtTime = (seconds) => {
       if (!seconds && seconds !== 0) return '--';
-      if (seconds < 60)  return `${seconds}s`;
-      const m = Math.floor(seconds / 60);
-      const s = seconds % 60;
-      return `${m}:${String(s).padStart(2, '0')}`;
+      const total = Math.round(seconds * 100) / 100;
+      if (total < 60) return `${total.toFixed(2)}s`;
+      const m = Math.floor(total / 60);
+      const s = (total % 60).toFixed(2);
+      return `${m}:${String(s).padStart(5, '0')}`;
     };
     const fmtSpeed = (v) => (!v ? '--' : `${Math.round(v)} km/h`);
     const fmtDist = (v) => (!v ? '--' : `${v.toFixed(2)} km`);
@@ -82,13 +83,13 @@ router.get('/sessions/:id/report', (req, res) => {
       y += 16;
       if (session.track) {
         doc.fillColor('#ff6b35').fontSize(10).font('Helvetica-Bold')
-           .text(`🏁  Track: `, 40, y, { continued: true })
+           .text(`Track: `, 40, y, { continued: true })
            .fillColor('#cccccc').font('Helvetica').text(session.track);
         y += 14;
       }
       if (session.bike) {
         doc.fillColor('#ff6b35').fontSize(10).font('Helvetica-Bold')
-           .text(`🏍  Bike: `, 40, y, { continued: true })
+           .text(`Bike: `, 40, y, { continued: true })
            .fillColor('#cccccc').font('Helvetica').text(session.bike);
         y += 14;
       }
@@ -132,6 +133,59 @@ router.get('/sessions/:id/report', (req, res) => {
       doc.fillColor('#888888').fontSize(10)
          .text('No lap data available for this session.', 40, y);
       y += 20;
+    }
+
+    // ── Data Quality / Source ────────────────────────────────────────────────
+    // Flags which fields are MEASURED vs ESTIMATED based on what the source
+    // telemetry actually contained. Helps distinguish RaceBox-native captures
+    // from third-party / mock exports that lack timestamps or full IMU data.
+    {
+      const fmt = summary.format || 'unknown';
+      const hasTimestamps = summary.sessionDuration > 0;
+      const hasLean = (analysis.summary && analysis.summary.hasLeanAngle) ||
+                      laps.some(l => l.maxLean || l.leanAngle);
+      const hasAlt = metrics.maxAltitude != null || metrics.elevationGain != null;
+
+      if (y > doc.page.height - 170) { doc.addPage(); y = 40; }
+      y += 6;
+      doc.fillColor('#ffffff').fontSize(11).font('Helvetica-Bold')
+         .text('Data Quality & Source', 40, y);
+      y += 16;
+
+      const sourceLabel =
+        fmt === 'racebox' ? 'RaceBox CSV (native capture)' :
+        fmt === 'standard-headered' ? 'Third-party / generic CSV export' :
+        fmt === 'standard' ? 'Generic CSV' : fmt;
+
+      const lines = [
+        ['Source format', sourceLabel, true],
+        ['Lap times', hasTimestamps
+            ? 'Measured (from capture timestamps)'
+            : 'ESTIMATED — derived from GPS distance ÷ avg speed (no timestamps in data)',
+          hasTimestamps],
+        ['Speed / GPS line', 'Measured', true],
+        ['Distance & sectors', 'Measured (GPS-derived)', true],
+        ['Lean angle', hasLean ? 'Measured' : 'Not present in source', hasLean],
+        ['Elevation', hasAlt ? 'Measured' : 'Not present in source', hasAlt],
+        ['Braking / accel G', 'Verify axis convention with source device', false],
+      ];
+
+      lines.forEach(([label, val, ok]) => {
+        if (y > doc.page.height - 60) { doc.addPage(); y = 40; }
+        doc.fillColor(ok ? '#4caf50' : '#ff6b35').fontSize(9).font('Helvetica-Bold')
+           .text(ok ? '✓' : '!', 40, y, { width: 12 });
+        doc.fillColor('#cccccc').fontSize(9).font('Helvetica-Bold')
+           .text(`${label}: `, 54, y, { continued: true })
+           .fillColor('#999999').font('Helvetica').text(val, { width: doc.page.width - 110 });
+        y += 13;
+      });
+      y += 4;
+      if (!hasTimestamps) {
+        if (y > doc.page.height - 60) { doc.addPage(); y = 40; }
+        doc.fillColor('#888888').fontSize(8).font('Helvetica-Oblique')
+           .text('Note: Absolute lap times and braking-G are indicative. For verified timing, supply a capture that includes timestamps and full IMU data (e.g. RaceBox-native CSV).', 40, y, { width: doc.page.width - 80 });
+        y += 24;
+      }
     }
 
     // ── Footer ──────────────────────────────────────────────────────────────
