@@ -6,6 +6,8 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { cleanExpiredSessions, migrateLegacyBetaSignups, initDb, createSession, getDeviceSessions, getAllSessions, getSessionById } from './lib/db.js';
 import { analyzeCSV } from './lib/analyzer.js';
+import { generateReport } from './lib/reportGenerator.js';
+import { sendReportEmail } from './lib/email.js';
 import multer from 'multer';
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 import jwt from 'jsonwebtoken';
@@ -47,6 +49,46 @@ app.post('/api/analyze', upload.single('file'), (req, res) => {
     const data = analyzeCSV(csv);
     return res.json({ success: true, data });
   } catch (err) { return res.status(500).json({ error: err.message }); }
+});
+
+// ── Upload CSV → generate PDF report → email it (public guest flow) ────────
+app.post('/api/report/email', upload.single('file'), async (req, res) => {
+  try {
+    const csv = req.file ? req.file.buffer.toString('utf-8') : req.body.csv;
+    const email = (req.body.email || '').trim();
+    if (!csv) return res.status(400).json({ error: 'No CSV provided' });
+    if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+      return res.status(400).json({ error: 'A valid email is required' });
+    }
+    const riderName = (req.body.riderName || req.body.name || '').trim();
+    const bikeName  = (req.body.bike || '').trim();
+
+    const analysis = analyzeCSV(csv);
+    if (!analysis || !analysis.laps || analysis.laps.length === 0) {
+      return res.status(422).json({ error: 'No valid laps found in this CSV. Check the file and try again.' });
+    }
+
+    const pdfBuffer = await generateReport(analysis, { riderName: riderName || 'Rider', bikeName });
+    const sendResult = await sendReportEmail(email, riderName, pdfBuffer, analysis, {
+      specials: req.body.specials !== 'false'
+    });
+    if (!sendResult.success) {
+      return res.status(502).json({ error: 'Report generated but email failed', detail: sendResult.error });
+    }
+
+    return res.json({
+      success: true,
+      message: `Report sent to ${email}`,
+      summary: {
+        track: analysis.summary?.trackName,
+        bestLap: analysis.lapStats?.best,
+        laps: analysis.lapStats?.count
+      }
+    });
+  } catch (err) {
+    console.error('[report/email]', err);
+    return res.status(500).json({ error: err.message });
+  }
 });
 
 // ── Device upload (BLE Sync → DB, optional auth to link to rider account) ───
