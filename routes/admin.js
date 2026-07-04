@@ -1,6 +1,6 @@
 import express from 'express';
 import bcrypt from 'bcryptjs';
-import { getBetaSignups, getBetaSignupStats, deleteBetaSignup, getAllRiders, getRiderById, updateRider } from '../lib/db.js';
+import { getBetaSignups, getBetaSignupStats, deleteBetaSignup, getAllRiders, getRiderById, updateRider, deleteRider } from '../lib/db.js';
 import { requireAdmin } from '../lib/middleware/auth.js';
 
 const router = express.Router();
@@ -28,6 +28,15 @@ router.get('/riders', (req, res) => {
     const riders = getAllRiders();
     const safe = riders.map(({ passwordHash, verifyToken, resetToken, resetTokenExpiry, ...r }) => r);
     res.json({ riders: safe });
+  } catch (err) { res.status(500).json({ error: 'Failed' }); }
+});
+
+router.delete('/riders/:id', (req, res) => {
+  try {
+    const rider = getRiderById(req.params.id);
+    if (!rider) return res.status(404).json({ error: 'Rider not found' });
+    deleteRider(rider.id);
+    res.json({ success: true });
   } catch (err) { res.status(500).json({ error: 'Failed' }); }
 });
 
