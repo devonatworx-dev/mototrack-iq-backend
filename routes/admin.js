@@ -1,8 +1,12 @@
 import express from 'express';
 import bcrypt from 'bcryptjs';
 import { getBetaSignups, getBetaSignupStats, deleteBetaSignup, getAllRiders, getRiderById, updateRider } from '../lib/db.js';
+import { requireAdmin } from '../lib/middleware/auth.js';
 
 const router = express.Router();
+
+// All admin routes require a valid admin key (X-Admin-Key header / Bearer).
+router.use(requireAdmin);
 
 router.get('/signups', (req, res) => {
   try { res.json({ signups: getBetaSignups() }); }

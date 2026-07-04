@@ -10,7 +10,9 @@ export async function signupHandler(req, res) {
     if (getBetaSignups().find(s => s.email === email)) return res.status(409).json({ error: 'Already on waitlist' });
     const ip = req.ip || req.connection?.remoteAddress || null;
     const signup = createBetaSignup({ id: uuidv4(), firstName, lastName, email, bike: bike||null, track: track||null, experience: experience||null, source: source||'direct', consent: 1, submittedAt: new Date().toISOString(), ip });
-    sendBetaSignupNotification({ firstName, lastName, email, bike, track, experience, source }).catch(()=>{});
+    sendBetaSignupNotification({ firstName, lastName, email, bike, track, experience, source })
+      .then(r => { if (!r || r.success === false) console.error('Beta notify failed:', r && r.error); })
+      .catch(e => console.error('Beta notify threw:', e && e.message));
     res.status(201).json({ success: true, signup });
   } catch (err) { console.error(err); res.status(500).json({ error: 'Signup failed' }); }
 }
