@@ -14,7 +14,7 @@ import jwt from 'jsonwebtoken';
 import authRoutes from './routes/auth.js';
 import sessionsRoutes from './routes/sessions.js';
 import ingestRoutes from './routes/ingest.js';
-import { signupHandler, countHandler } from './routes/beta.js';
+import { signupHandler, confirmHandler, countHandler } from './routes/beta.js';
 import adminRoutes from './routes/admin.js';
 import deviceReportsRoutes from './routes/device-reports.js';
 
@@ -193,6 +193,7 @@ app.get('/api/device/eod', (req, res) => {
 });
 
 app.post('/api/beta-signup', signupHandler);
+app.post('/api/beta/confirm', confirmHandler);
 app.get('/api/beta/count', countHandler);
 
 app.get('*', (req, res) => {
