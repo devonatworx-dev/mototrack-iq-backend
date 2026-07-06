@@ -14,7 +14,7 @@ import jwt from 'jsonwebtoken';
 import authRoutes from './routes/auth.js';
 import sessionsRoutes from './routes/sessions.js';
 import ingestRoutes from './routes/ingest.js';
-import { signupHandler, confirmHandler, countHandler } from './routes/beta.js';
+import { signupHandler, confirmHandler, countHandler, resendHandler } from './routes/beta.js';
 import adminRoutes from './routes/admin.js';
 import deviceReportsRoutes from './routes/device-reports.js';
 
@@ -49,6 +49,24 @@ app.post('/api/analyze', upload.single('file'), (req, res) => {
     const data = analyzeCSV(csv);
     return res.json({ success: true, data });
   } catch (err) { return res.status(500).json({ error: err.message }); }
+});
+
+// ── Upload CSV → download PDF report directly (public/guest flow) ──────────
+app.post('/api/report', upload.single('file'), async (req, res) => {
+  try {
+    const csv = req.file ? req.file.buffer.toString('utf-8') : req.body.csv;
+    if (!csv) return res.status(400).json({ error: 'No CSV provided' });
+    const analysis = analyzeCSV(csv);
+    if (!analysis || !analysis.laps || analysis.laps.length === 0) {
+      return res.status(422).json({ error: 'No valid laps found in this CSV.' });
+    }
+    const riderName = (req.body.riderName || req.body.name || 'Rider').trim();
+    const bikeName = (req.body.bike || '').trim();
+    const pdf = await generateReport(analysis, { riderName, bikeName });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', 'attachment; filename="MotoTrackIQ-Report.pdf"');
+    return res.send(pdf);
+  } catch (err) { console.error('[report]', err); return res.status(500).json({ error: err.message }); }
 });
 
 // ── Upload CSV → generate PDF report → email it (public guest flow) ────────
@@ -194,6 +212,7 @@ app.get('/api/device/eod', (req, res) => {
 
 app.post('/api/beta-signup', signupHandler);
 app.post('/api/beta/confirm', confirmHandler);
+app.post('/api/beta/resend', resendHandler);
 app.get('/api/beta/count', countHandler);
 
 app.get('*', (req, res) => {

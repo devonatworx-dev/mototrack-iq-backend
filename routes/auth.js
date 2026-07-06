@@ -3,7 +3,7 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { v4 as uuidv4 } from 'uuid';
 import { createRider, getRiderByEmail, getRiderById, getRiderByVerifyToken, updateRider } from '../lib/db.js';
-import { sendVerifyEmail, sendPasswordResetEmail } from '../lib/email.js';
+import { sendVerifyEmail, sendPasswordResetEmail, sendWelcomeEmail } from '../lib/email.js';
 import { requireAuth } from '../lib/middleware/auth.js';
 
 const router = express.Router();
@@ -104,6 +104,13 @@ router.post('/set-password', (req, res) => {
     const hash = bcrypt.hashSync(password, 10);
     // Clear the verify token now that the account is fully set up.
     const updated = updateRider(rider.id, { passwordHash: hash, verifyToken: null, verifyTokenExpiry: null });
+    // Fire-and-forget welcome email confirming the account is active (non-blocking).
+    sendWelcomeEmail(updated.email, updated.firstName, {
+      lastName: updated.lastName, primaryTrack: updated.primaryTrack,
+      experience: updated.experience, plan: updated.plan
+    })
+      .then(r => { if (!r || r.success === false) console.error('Welcome email failed:', r && r.error); })
+      .catch(e => console.error('Welcome email threw:', e && e.message));
     res.json({ success: true, token: signToken(rider.id), rider: sanitize(updated) });
   } catch (err) { console.error(err); res.status(500).json({ error: 'Could not set password' }); }
 });
