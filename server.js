@@ -4,7 +4,7 @@ import cors from 'cors';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
-import { cleanExpiredSessions, migrateLegacyBetaSignups, initDb, createSession, getDeviceSessions, getAllSessions, getSessionById } from './lib/db.js';
+import { cleanExpiredSessions, migrateLegacyBetaSignups, initDb, createSession, getDeviceSessions, getAllSessions, getSessionById, getEntitlement, consumeReportCredit } from './lib/db.js';
 import { analyzeCSV } from './lib/analyzer.js';
 import { generateReport } from './lib/reportGenerator.js';
 import { sendReportEmail } from './lib/email.js';
@@ -63,6 +63,20 @@ app.post('/api/report', requireAuth, upload.single('file'), async (req, res) => 
   try {
     const csv = req.file ? req.file.buffer.toString('utf-8') : req.body.csv;
     if (!csv) return res.status(400).json({ error: 'No CSV provided' });
+
+    // CREDIT GATE (P1): the direct analyze->report path must honor the same
+    // paywall as /api/sessions/:id/report, otherwise it's a free-report bypass.
+    const ent = getEntitlement(req.riderId);
+    if (ent && !ent.canGenerate) {
+      return res.status(402).json({
+        error: 'No report credits remaining',
+        paywall: true,
+        reportCredits: ent.reportCredits,
+        plan: ent.plan,
+        message: "You've used your free analysis. Subscribe or enter a promo code to unlock more reports."
+      });
+    }
+
     const analysis = analyzeCSV(csv);
     if (!analysis || !analysis.laps || analysis.laps.length === 0) {
       return res.status(422).json({ error: 'No valid laps found in this CSV.' });
@@ -70,8 +84,18 @@ app.post('/api/report', requireAuth, upload.single('file'), async (req, res) => 
     const riderName = (req.body.riderName || req.body.name || 'Rider').trim();
     const bikeName = (req.body.bike || '').trim();
     const pdf = await generateReport(analysis, { riderName, bikeName });
+
+    // Consume AFTER successful generation so a failure never burns a credit.
+    const after = consumeReportCredit(req.riderId);
+    if (!after) {
+      return res.status(402).json({ error: 'No report credits remaining', paywall: true });
+    }
+
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', 'attachment; filename="MotoTrackIQ-Report.pdf"');
+    res.setHeader('X-Report-Credits-Remaining', String(after.reportCredits));
+    res.setHeader('X-Reports-Generated', String(after.reportsGenerated));
+    res.setHeader('X-Ask-Review', after.reportsGenerated === 1 ? '1' : '0');
     return res.send(pdf);
   } catch (err) { console.error('[report]', err); return res.status(500).json({ error: err.message }); }
 });
