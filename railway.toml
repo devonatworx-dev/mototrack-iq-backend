@@ -1,0 +1,11 @@
+# Railway deployment config
+# Docs: https://docs.railway.app/reference/config
+
+[build]
+command = "npm install"
+builder = "nixpacks"
+
+[deploy]
+restart = ""
+volume = ""
+healthCheckPath = "/health"

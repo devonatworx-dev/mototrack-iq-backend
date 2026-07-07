@@ -1,6 +1,6 @@
 import express from 'express';
 import bcrypt from 'bcryptjs';
-import { getBetaSignups, getBetaSignupStats, deleteBetaSignup, getAllRiders, getRiderById, updateRider, deleteRider } from '../lib/db.js';
+import { getBetaSignups, getBetaSignupStats, deleteBetaSignup, getAllRiders, getRiderById, updateRider, deleteRider, createPromoCode, listPromoCodes, getPromoCode, setPromoActive, addReportCredits } from '../lib/db.js';
 import { requireAdmin } from '../lib/middleware/auth.js';
 
 const router = express.Router();
@@ -52,6 +52,48 @@ router.post('/riders/:id/reset-password', (req, res) => {
     updateRider(rider.id, { passwordHash: hash });
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: 'Failed' }); }
+});
+
+// ── Promo code management (P1b) ─────────────────────────────────────
+router.get('/promo', (req, res) => {
+  try { res.json({ codes: listPromoCodes() }); }
+  catch (err) { console.error(err); res.status(500).json({ error: 'Failed' }); }
+});
+
+router.post('/promo', (req, res) => {
+  try {
+    const { code, creditsGranted, maxUses, expiresAt, note } = req.body;
+    if (!code || !String(code).trim()) return res.status(400).json({ error: 'code required' });
+    if (getPromoCode(code)) return res.status(409).json({ error: 'Code already exists' });
+    const created = createPromoCode({ code, creditsGranted, maxUses, expiresAt, note });
+    res.status(201).json({ code: created });
+  } catch (err) { console.error(err); res.status(500).json({ error: err.message || 'Failed' }); }
+});
+
+router.post('/promo/:code/disable', (req, res) => {
+  try {
+    if (!getPromoCode(req.params.code)) return res.status(404).json({ error: 'Not found' });
+    res.json({ code: setPromoActive(req.params.code, false) });
+  } catch (err) { console.error(err); res.status(500).json({ error: 'Failed' }); }
+});
+
+router.post('/promo/:code/enable', (req, res) => {
+  try {
+    if (!getPromoCode(req.params.code)) return res.status(404).json({ error: 'Not found' });
+    res.json({ code: setPromoActive(req.params.code, true) });
+  } catch (err) { console.error(err); res.status(500).json({ error: 'Failed' }); }
+});
+
+// Manually grant report credits to a rider (support / goodwill).
+router.post('/riders/:id/grant-credits', (req, res) => {
+  try {
+    const amount = parseInt(req.body.amount, 10);
+    if (!amount || amount < 1) return res.status(400).json({ error: 'amount (>=1) required' });
+    const rider = getRiderById(req.params.id);
+    if (!rider) return res.status(404).json({ error: 'Rider not found' });
+    const entitlement = addReportCredits(rider.id, amount);
+    res.json({ success: true, entitlement });
+  } catch (err) { console.error(err); res.status(500).json({ error: 'Failed' }); }
 });
 
 export default router;

@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MotoTrackIQ — Upload & Get Your Report</title>
+<style>
+  :root{ --orange:#f97316; --orange2:#ea580c; --dark:#1a1a2e; --blue:#38bdf8; }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:#0f0f1a;color:#eee;line-height:1.5;min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:24px}
+  .card{width:100%;max-width:520px;background:#16162a;border:1px solid #2a2a44;border-radius:16px;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.4)}
+  .head{background:linear-gradient(135deg,var(--dark),#2d2d44);padding:28px 28px 22px;text-align:center;border-bottom:3px solid var(--orange)}
+  .logo{font-size:1.7rem;font-weight:800;letter-spacing:-.5px}
+  .logo .iq{color:var(--orange)}
+  .head p{margin:6px 0 0;color:var(--blue);font-size:.85rem;letter-spacing:.5px}
+  .body{padding:28px}
+  h2{margin:0 0 6px;font-size:1.25rem}
+  .sub{color:#9a9ab0;font-size:.9rem;margin:0 0 22px}
+  label{display:block;font-size:.8rem;text-transform:uppercase;letter-spacing:.5px;color:#9a9ab0;margin:14px 0 6px}
+  input[type=text],input[type=email]{width:100%;padding:12px 14px;border-radius:9px;border:1px solid #33334d;background:#0f0f1a;color:#eee;font-size:1rem}
+  input:focus{outline:none;border-color:var(--orange)}
+  .drop{margin-top:6px;border:2px dashed #3a3a55;border-radius:12px;padding:26px;text-align:center;cursor:pointer;transition:.15s;background:#0f0f1a}
+  .drop.drag{border-color:var(--orange);background:#1c1726}
+  .drop strong{color:var(--orange)}
+  .drop small{display:block;color:#777;margin-top:6px;font-size:.8rem}
+  .file{margin-top:10px;font-size:.9rem;color:#9fdb9f;display:none}
+  button{width:100%;margin-top:24px;padding:15px;border:none;border-radius:10px;background:linear-gradient(135deg,var(--orange),var(--orange2));color:#fff;font-weight:700;font-size:1.05rem;cursor:pointer;transition:.15s}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  button:not(:disabled):hover{transform:translateY(-1px)}
+  .msg{margin-top:18px;padding:14px;border-radius:9px;font-size:.92rem;display:none}
+  .msg.ok{background:#10331f;border:1px solid #1f7a44;color:#9fe6b8;display:block}
+  .msg.err{background:#3a1620;border:1px solid #7a1f3a;color:#f0a0b4;display:block}
+  .msg.load{background:#16263a;border:1px solid #1f527a;color:#9fcce6;display:block}
+  .foot{margin-top:20px;color:#666;font-size:.8rem;text-align:center}
+  .foot a{color:var(--orange);text-decoration:none}
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="head">
+      <div class="logo">MOTOTRACK<span class="iq">IQ</span></div>
+      <p>AI TRACK DAY ANALYTICS</p>
+    </div>
+    <div class="body">
+      <h2>Get your track day report</h2>
+      <p class="sub">Upload your raw session data — RaceBox / lap-timer <strong>CSV</strong> or a <strong>GPX</strong> track file — and we'll email you a full PDF analysis: lap times, sectors, top speed and consistency.</p>
+
+      <form id="form">
+        <label for="email">Email *</label>
+        <input type="email" id="email" name="email" placeholder="you@example.com" required>
+
+        <label for="name">Rider name</label>
+        <input type="text" id="name" name="name" placeholder="Optional">
+
+        <label for="bike">Bike</label>
+        <input type="text" id="bike" name="bike" placeholder="e.g. SV650 (optional)">
+
+        <label>Session file (CSV or GPX) *</label>
+        <div class="drop" id="drop">
+          <strong>Click to choose</strong> or drag &amp; drop your file here
+          <small>RaceBox / lap-timer CSV or GPX track file · max 50 MB</small>
+          <input type="file" id="file" accept=".csv,.gpx,text/csv,application/gpx+xml" style="display:none">
+        </div>
+        <div class="file" id="fileName"></div>
+
+        <button type="submit" id="submit">Email me my report</button>
+      </form>
+
+      <div class="msg" id="msg"></div>
+
+      <div class="foot">Powered by <a href="https://mototrackiq.com">mototrackiq.com</a></div>
+    </div>
+  </div>
+
+<script>
+  const drop = document.getElementById('drop');
+  const fileInput = document.getElementById('file');
+  const fileName = document.getElementById('fileName');
+  const form = document.getElementById('form');
+  const msg = document.getElementById('msg');
+  const submit = document.getElementById('submit');
+
+  drop.addEventListener('click', () => fileInput.click());
+  ['dragover','dragenter'].forEach(e => drop.addEventListener(e, ev => { ev.preventDefault(); drop.classList.add('drag'); }));
+  ['dragleave','drop'].forEach(e => drop.addEventListener(e, ev => { ev.preventDefault(); drop.classList.remove('drag'); }));
+  drop.addEventListener('drop', ev => { if (ev.dataTransfer.files.length) { fileInput.files = ev.dataTransfer.files; showFile(); } });
+  fileInput.addEventListener('change', showFile);
+
+  function showFile(){
+    if (fileInput.files.length){
+      fileName.textContent = '📎 ' + fileInput.files[0].name;
+      fileName.style.display = 'block';
+    }
+  }
+  function show(type, text){ msg.className = 'msg ' + type; msg.textContent = text; }
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const email = document.getElementById('email').value.trim();
+    if (!fileInput.files.length){ show('err', 'Please choose a CSV or GPX file first.'); return; }
+    if (!email){ show('err', 'Please enter your email.'); return; }
+
+    const fd = new FormData();
+    fd.append('file', fileInput.files[0]);
+    fd.append('email', email);
+    fd.append('name', document.getElementById('name').value.trim());
+    fd.append('bike', document.getElementById('bike').value.trim());
+
+    submit.disabled = true;
+    show('load', '⏳ Analyzing your session and building the report…');
+    try {
+      const r = await fetch('/api/report/email', { method:'POST', body: fd });
+      const j = await r.json();
+      if (r.ok && j.success){
+        const bl = j.summary && j.summary.bestLap ? fmtLap(j.summary.bestLap) : null;
+        show('ok', '✅ Report sent to ' + email + '!' + (bl ? ' Best lap: ' + bl + '. ' : ' ') + 'Check your inbox (and spam).');
+        form.reset(); fileName.style.display='none';
+      } else {
+        show('err', '⚠️ ' + (j.error || 'Something went wrong. Please try again.'));
+      }
+    } catch (err){
+      show('err', '⚠️ Network error: ' + err.message);
+    } finally {
+      submit.disabled = false;
+    }
+  });
+
+  function fmtLap(t){
+    const m = Math.floor(t/60), s = (t%60).toFixed(3).padStart(6,'0');
+    return m + ':' + s;
+  }
+</script>
+</body>
+</html>

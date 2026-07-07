@@ -17,6 +17,8 @@ import ingestRoutes from './routes/ingest.js';
 import { signupHandler, confirmHandler, countHandler, resendHandler } from './routes/beta.js';
 import adminRoutes from './routes/admin.js';
 import deviceReportsRoutes from './routes/device-reports.js';
+import promoRoutes from './routes/promo.js';
+import { requireAuth } from './lib/middleware/auth.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = parseInt(process.env.PORT || '3009', 10);
@@ -39,10 +41,15 @@ app.use('/api/sessions/ingest', ingestRoutes);  // ESP32 bridge (no auth)
 app.use('/api/sessions', sessionsRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/device', deviceReportsRoutes);
+app.use('/api/promo', promoRoutes);
 
 // Beta routes at correct paths
-// Public CSV analysis (no auth required — for guest upload flow)
-app.post('/api/analyze', upload.single('file'), (req, res) => {
+// P0 (2026-07-06): these were open anonymous free-analysis routes (unlimited free
+// full analysis + PDF, no account). The live frontend uses the authed /api/sessions
+// flow and does NOT call these, so gating them behind requireAuth closes a free-tier
+// leak with no user-facing impact. Revisit once the credit/entitlement system (P1)
+// lands — the free report should decrement a credit, not be wide open.
+app.post('/api/analyze', requireAuth, upload.single('file'), (req, res) => {
   try {
     const csv = req.file ? req.file.buffer.toString('utf-8') : req.body.csv;
     if (!csv) return res.status(400).json({ error: 'No CSV provided' });
@@ -51,8 +58,8 @@ app.post('/api/analyze', upload.single('file'), (req, res) => {
   } catch (err) { return res.status(500).json({ error: err.message }); }
 });
 
-// ── Upload CSV → download PDF report directly (public/guest flow) ──────────
-app.post('/api/report', upload.single('file'), async (req, res) => {
+// ── Upload CSV → download PDF report directly (now auth-gated; see P0 note above) ──
+app.post('/api/report', requireAuth, upload.single('file'), async (req, res) => {
   try {
     const csv = req.file ? req.file.buffer.toString('utf-8') : req.body.csv;
     if (!csv) return res.status(400).json({ error: 'No CSV provided' });
@@ -69,8 +76,8 @@ app.post('/api/report', upload.single('file'), async (req, res) => {
   } catch (err) { console.error('[report]', err); return res.status(500).json({ error: err.message }); }
 });
 
-// ── Upload CSV → generate PDF report → email it (public guest flow) ────────
-app.post('/api/report/email', upload.single('file'), async (req, res) => {
+// ── Upload CSV → generate PDF report → email it (now auth-gated; see P0 note above) ──
+app.post('/api/report/email', requireAuth, upload.single('file'), async (req, res) => {
   try {
     const csv = req.file ? req.file.buffer.toString('utf-8') : req.body.csv;
     const email = (req.body.email || '').trim();
