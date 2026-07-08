@@ -4,7 +4,7 @@ import cors from 'cors';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
-import { cleanExpiredSessions, migrateLegacyBetaSignups, initDb, createSession, getDeviceSessions, getAllSessions, getSessionById, getEntitlement, consumeReportCredit } from './lib/db.js';
+import { cleanExpiredSessions, migrateLegacyBetaSignups, initDb, createSession, getDeviceSessions, getAllSessions, getSessionById, getEntitlement, consumeReportCredit, addReportCredits } from './lib/db.js';
 import { analyzeCSV } from './lib/analyzer.js';
 import { generateReport } from './lib/reportGenerator.js';
 import { sendReportEmail } from './lib/email.js';
@@ -112,22 +112,46 @@ app.post('/api/report/email', requireAuth, upload.single('file'), async (req, re
     const riderName = (req.body.riderName || req.body.name || '').trim();
     const bikeName  = (req.body.bike || '').trim();
 
+    // CREDIT GATE (P1): emailing a report is the same paid action as downloading
+    // one — gate it identically so it can't be used to bypass the paywall.
+    const ent = getEntitlement(req.riderId);
+    if (ent && !ent.canGenerate) {
+      return res.status(402).json({
+        error: 'No report credits remaining',
+        paywall: true,
+        reportCredits: ent.reportCredits,
+        plan: ent.plan,
+        message: "You've used your free analysis. Subscribe or enter a promo code to unlock more reports."
+      });
+    }
+
     const analysis = analyzeCSV(csv);
     if (!analysis || !analysis.laps || analysis.laps.length === 0) {
       return res.status(422).json({ error: 'No valid laps found in this CSV. Check the file and try again.' });
     }
 
     const pdfBuffer = await generateReport(analysis, { riderName: riderName || 'Rider', bikeName });
+
+    // Consume AFTER successful generation, BEFORE emailing, so a rider can't
+    // repeatedly email themselves reports on a single credit.
+    const after = consumeReportCredit(req.riderId);
+    if (!after) {
+      return res.status(402).json({ error: 'No report credits remaining', paywall: true });
+    }
     const sendResult = await sendReportEmail(email, riderName, pdfBuffer, analysis, {
       specials: req.body.specials !== 'false'
     });
     if (!sendResult.success) {
+      // Email failed after we consumed the credit — refund it so the rider
+      // isn't charged for a report they never received.
+      try { addReportCredits(req.riderId, 1); } catch (_) {}
       return res.status(502).json({ error: 'Report generated but email failed', detail: sendResult.error });
     }
 
     return res.json({
       success: true,
       message: `Report sent to ${email}`,
+      reportCredits: after.reportCredits,
       summary: {
         track: analysis.summary?.trackName,
         bestLap: analysis.lapStats?.best,
