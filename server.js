@@ -18,6 +18,7 @@ import { signupHandler, confirmHandler, countHandler, resendHandler } from './ro
 import adminRoutes from './routes/admin.js';
 import deviceReportsRoutes from './routes/device-reports.js';
 import promoRoutes from './routes/promo.js';
+import feedbackRoutes from './routes/feedback.js';
 import { requireAuth } from './lib/middleware/auth.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -42,6 +43,7 @@ app.use('/api/sessions', sessionsRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/device', deviceReportsRoutes);
 app.use('/api/promo', promoRoutes);
+app.use('/api/feedback', feedbackRoutes);
 
 // Beta routes at correct paths
 // P0 (2026-07-06): these were open anonymous free-analysis routes (unlimited free

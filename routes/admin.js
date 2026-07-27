@@ -1,6 +1,6 @@
 import express from 'express';
 import bcrypt from 'bcryptjs';
-import { getBetaSignups, getBetaSignupStats, deleteBetaSignup, getAllRiders, getRiderById, updateRider, deleteRider, createPromoCode, listPromoCodes, getPromoCode, setPromoActive, addReportCredits } from '../lib/db.js';
+import { getBetaSignups, getBetaSignupStats, deleteBetaSignup, getAllRiders, getRiderById, updateRider, deleteRider, createPromoCode, listPromoCodes, getPromoCode, setPromoActive, addReportCredits, getAllFeedback, getFeedbackById, setFeedbackApproval, setFeedbackFeatured, deleteFeedback } from '../lib/db.js';
 import { requireAdmin } from '../lib/middleware/auth.js';
 
 const router = express.Router();
@@ -21,6 +21,41 @@ router.get('/signups/stats', (req, res) => {
 router.delete('/signups/:email', (req, res) => {
   try { deleteBetaSignup(req.params.email); res.json({ success: true }); }
   catch (err) { res.status(500).json({ error: 'Failed' }); }
+});
+
+// ── Feedback moderation ──────────────────────────────────────────────
+router.get('/feedback', (req, res) => {
+  try { res.json({ feedback: getAllFeedback() }); }
+  catch (err) { res.status(500).json({ error: 'Failed' }); }
+});
+
+// Approve / unapprove for public display. Body: { approved: true|false }
+router.post('/feedback/:id/approve', (req, res) => {
+  try {
+    const fb = getFeedbackById(req.params.id);
+    if (!fb) return res.status(404).json({ error: 'Not found' });
+    const updated = setFeedbackApproval(req.params.id, !!req.body.approved);
+    res.json({ success: true, feedback: updated });
+  } catch (err) { res.status(500).json({ error: 'Failed' }); }
+});
+
+// Feature / unfeature (pin to top of testimonials). Body: { featured: true|false }
+router.post('/feedback/:id/feature', (req, res) => {
+  try {
+    const fb = getFeedbackById(req.params.id);
+    if (!fb) return res.status(404).json({ error: 'Not found' });
+    const updated = setFeedbackFeatured(req.params.id, !!req.body.featured);
+    res.json({ success: true, feedback: updated });
+  } catch (err) { res.status(500).json({ error: 'Failed' }); }
+});
+
+router.delete('/feedback/:id', (req, res) => {
+  try {
+    const fb = getFeedbackById(req.params.id);
+    if (!fb) return res.status(404).json({ error: 'Not found' });
+    deleteFeedback(req.params.id);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: 'Failed' }); }
 });
 
 router.get('/riders', (req, res) => {
