@@ -1,6 +1,7 @@
 import express from 'express';
 import bcrypt from 'bcryptjs';
-import { getBetaSignups, getBetaSignupStats, deleteBetaSignup, getAllRiders, getRiderById, updateRider, deleteRider, createPromoCode, listPromoCodes, getPromoCode, setPromoActive, addReportCredits, getAllFeedback, getFeedbackById, setFeedbackApproval, setFeedbackFeatured, deleteFeedback } from '../lib/db.js';
+import { v4 as uuidv4 } from 'uuid';
+import { getBetaSignups, getBetaSignupStats, deleteBetaSignup, getAllRiders, getRiderById, getRiderByEmail, createRider, updateRider, deleteRider, createPromoCode, listPromoCodes, getPromoCode, setPromoActive, addReportCredits, getAllFeedback, getFeedbackById, setFeedbackApproval, setFeedbackFeatured, deleteFeedback } from '../lib/db.js';
 import { requireAdmin } from '../lib/middleware/auth.js';
 
 const router = express.Router();
@@ -64,6 +65,45 @@ router.get('/riders', (req, res) => {
     const safe = riders.map(({ passwordHash, verifyToken, resetToken, resetTokenExpiry, ...r }) => r);
     res.json({ riders: safe });
   } catch (err) { res.status(500).json({ error: 'Failed' }); }
+});
+
+// Admin: create a PRE-VERIFIED rider with a password (and optional report credits)
+// in one call. Bypasses the email verification flow — for trackside/beta onboarding
+// when a rider can't do the email dance. Body:
+//   { firstName, lastName?, email, password, credits?, plan?, bikes?, primaryTrack? }
+router.post('/riders', (req, res) => {
+  try {
+    const { firstName, lastName, email, password, credits, plan, bikes, primaryTrack, riderType, experience } = req.body || {};
+    if (!firstName || !email || !password) {
+      return res.status(400).json({ error: 'firstName, email, and password are required' });
+    }
+    if (String(password).length < 6) {
+      return res.status(400).json({ error: 'Password must be at least 6 characters' });
+    }
+    if (getRiderByEmail(email)) {
+      return res.status(409).json({ error: 'A rider with that email already exists' });
+    }
+    const id = uuidv4();
+    const now = new Date().toISOString();
+    const passwordHash = bcrypt.hashSync(String(password), 10);
+    createRider({
+      id, firstName, lastName: lastName || '', email,
+      passwordHash, bikes: bikes || null, primaryTrack: primaryTrack || null,
+      riderType: riderType || null, experience: experience || null,
+      consentAt: now
+    });
+    // Mark verified immediately (createRider inserts verified=0) and set plan intent.
+    updateRider(id, { verified: 1, verifyToken: null, verifyTokenExpiry: null, plan: plan || null });
+    const n = parseInt(credits, 10);
+    let entitlement = null;
+    if (n && n > 0) entitlement = addReportCredits(id, n);
+    const rider = getRiderById(id);
+    const { passwordHash: _ph, verifyToken: _vt, resetToken: _rt, resetTokenExpiry: _re, ...safe } = rider;
+    res.status(201).json({ success: true, rider: safe, entitlement });
+  } catch (err) {
+    console.error('[admin/riders create]', err);
+    res.status(500).json({ error: err.message || 'Failed' });
+  }
 });
 
 router.delete('/riders/:id', (req, res) => {
