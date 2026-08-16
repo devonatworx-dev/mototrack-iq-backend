@@ -32,3 +32,4 @@ build/
 *.key
 credentials.json
 service-account-*.json
+config/token.json
