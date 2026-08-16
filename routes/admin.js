@@ -1,7 +1,7 @@
 import express from 'express';
 import bcrypt from 'bcryptjs';
 import { v4 as uuidv4 } from 'uuid';
-import { getBetaSignups, getBetaSignupStats, deleteBetaSignup, getAllRiders, getRiderById, getRiderByEmail, createRider, updateRider, deleteRider, createPromoCode, listPromoCodes, getPromoCode, setPromoActive, addReportCredits, getAllFeedback, getFeedbackById, setFeedbackApproval, setFeedbackFeatured, deleteFeedback } from '../lib/db.js';
+import { getBetaSignups, getBetaSignupStats, deleteBetaSignup, getAllRiders, getRiderById, getRiderByEmail, createRider, updateRider, deleteRider, createPromoCode, listPromoCodes, getPromoCode, setPromoActive, addReportCredits, getAllFeedback, getFeedbackById, setFeedbackApproval, setFeedbackFeatured, deleteFeedback, deleteSession, updateSession } from '../lib/db.js';
 import { requireAdmin } from '../lib/middleware/auth.js';
 
 const router = express.Router();
@@ -112,6 +112,20 @@ router.delete('/riders/:id', (req, res) => {
     if (!rider) return res.status(404).json({ error: 'Rider not found' });
     deleteRider(rider.id);
     res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: 'Failed' }); }
+});
+
+router.delete('/sessions/:id', (req, res) => {
+  try {
+    deleteSession(req.params.id);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: 'Failed' }); }
+});
+
+router.patch('/sessions/:id', (req, res) => {
+  try {
+    const updated = updateSession(req.params.id, req.body);
+    res.json({ success: true, session: updated });
   } catch (err) { res.status(500).json({ error: 'Failed' }); }
 });
 
