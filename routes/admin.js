@@ -115,6 +115,20 @@ router.delete('/riders/:id', (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Failed' }); }
 });
 
+router.patch('/riders/:id', (req, res) => {
+  try {
+    const rider = getRiderById(req.params.id);
+    if (!rider) return res.status(404).json({ error: 'Rider not found' });
+    const allowed = ['firstName','lastName','phone','experience','riderType','bikes','primaryTrack','notes'];
+    const updates = {};
+    for (const key of allowed) {
+      if (key in req.body) updates[key] = req.body[key];
+    }
+    const updated = updateRider(rider.id, updates);
+    res.json({ success: true, rider: updated });
+  } catch (err) { res.status(500).json({ error: 'Failed' }); }
+});
+
 router.delete('/sessions/:id', (req, res) => {
   try {
     deleteSession(req.params.id);
