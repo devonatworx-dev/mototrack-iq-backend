@@ -82,6 +82,10 @@ router.post('/:id/report', requireAuth, async (req, res) => {
     if (!session) return res.status(404).json({ error: 'Not found' });
     if (session.riderId !== req.riderId) return res.status(403).json({ error: 'Forbidden' });
 
+    if (!session.analysisData || typeof session.analysisData !== 'object' || !session.analysisData.summary) {
+      return res.status(400).json({ error: 'No analysis data for this session yet. Please upload a CSV file first.' });
+    }
+
     const ent = getEntitlement(req.riderId);
     if (ent && !ent.canGenerate) {
       return res.status(402).json({
@@ -110,7 +114,7 @@ router.post('/:id/report', requireAuth, async (req, res) => {
     res.setHeader('X-Reports-Generated', String(after.reportsGenerated));
     res.setHeader('X-Ask-Review', after.reportsGenerated === 1 ? '1' : '0');
     res.send(pdf);
-  } catch (err) { console.error(err); res.status(500).json({ error: 'Report failed' }); }
+  } catch (err) { console.error('REPORT ERROR:', err.message); console.error(err.stack); res.status(500).json({ error: 'Report failed: ' + err.message }); }
 });
 
 router.post('/:id/report/preview', requireAuth, (req, res) => {
