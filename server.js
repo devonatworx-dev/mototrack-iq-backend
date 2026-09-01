@@ -19,6 +19,7 @@ import adminRoutes from './routes/admin.js';
 import deviceReportsRoutes from './routes/device-reports.js';
 import promoRoutes from './routes/promo.js';
 import feedbackRoutes from './routes/feedback.js';
+import checkoutRoutes from './routes/checkout.js';
 import { requireAuth } from './lib/middleware/auth.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -29,6 +30,11 @@ if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 
 const app = express();
 app.use(cors({ origin: true, credentials: true }));
+
+// LemonSqueezy webhook needs the RAW body for HMAC signature verification, so it
+// MUST be mounted with express.raw() BEFORE the global express.json() parser.
+app.use('/api/webhooks/lemonsqueezy', express.raw({ type: '*/*', limit: '2mb' }), checkoutRoutes);
+
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
@@ -44,6 +50,7 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/device', deviceReportsRoutes);
 app.use('/api/promo', promoRoutes);
 app.use('/api/feedback', feedbackRoutes);
+app.use('/api', checkoutRoutes);  // /api/checkout/:product (JSON body, auth)
 
 // Beta routes at correct paths
 // P0 (2026-07-06): these were open anonymous free-analysis routes (unlimited free
