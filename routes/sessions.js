@@ -5,6 +5,7 @@ import { analyzeCSV } from '../lib/analyzer.js';
 import { generateReport } from '../lib/reportGenerator.js';
 import { buildDayProgress, generateDayReport } from '../lib/dayReport.js';
 import { requireAuth } from '../lib/middleware/auth.js';
+import { signReportUrl } from '../lib/reportLink.js';
 
 const router = express.Router();
 
@@ -115,6 +116,21 @@ router.post('/:id/report', requireAuth, async (req, res) => {
     res.setHeader('X-Ask-Review', after.reportsGenerated === 1 ? '1' : '0');
     res.send(pdf);
   } catch (err) { console.error('REPORT ERROR:', err.message); console.error(err.stack); res.status(500).json({ error: 'Report failed: ' + err.message }); }
+});
+
+// Rider requests a short-lived signed link to (re)download an already-generated
+// report PDF. FREE — no credit is consumed (the credit was spent at generation).
+// Requires login + ownership; the returned URL works for browser navigation.
+router.get('/:id/report-link', requireAuth, (req, res) => {
+  try {
+    const session = getSessionById(req.params.id);
+    if (!session) return res.status(404).json({ error: 'Not found' });
+    if (session.riderId !== req.riderId) return res.status(403).json({ error: 'Forbidden' });
+    if (!session.analysisData || typeof session.analysisData !== 'object' || !session.analysisData.summary) {
+      return res.status(400).json({ error: 'No report available for this session yet.' });
+    }
+    res.json({ url: signReportUrl(session.id) });
+  } catch (err) { console.error('[report-link]', err.message); res.status(500).json({ error: 'Failed' }); }
 });
 
 router.post('/:id/report/preview', requireAuth, (req, res) => {

@@ -1,12 +1,33 @@
 import express from 'express';
 import PDFDocument from 'pdfkit';
 import { getSessionById } from '../lib/db.js';
+import { verifyReportToken } from '../lib/reportLink.js';
 
 const router = express.Router();
 
-// GET /api/device/sessions/:id/report — stream PDF
+// GET /api/device/sessions/:id/report?token=<signed> — stream PDF.
+// Browser navigation can't send auth headers, so this route is protected by a
+// short-lived signed token minted by an authed endpoint (rider or admin). A bare
+// request with no valid token is rejected (closes the open-report privacy hole).
+// Admin key in the X-Admin-Key/Bearer header also grants access (for the admin panel).
 router.get('/sessions/:id/report', (req, res) => {
   try {
+    // Accept EITHER a valid signed token OR a valid admin key.
+    const adminKey = req.headers['x-admin-key']
+      || (req.headers.authorization && req.headers.authorization.startsWith('Bearer ')
+          ? req.headers.authorization.slice(7) : null);
+    const isAdmin = !!process.env.ADMIN_KEY && adminKey === process.env.ADMIN_KEY;
+    if (!isAdmin) {
+      const v = verifyReportToken(req.params.id, req.query.token);
+      if (!v.ok) {
+        const status = v.reason === 'expired' ? 410 : 403;
+        return res.status(status).json({
+          error: v.reason === 'expired' ? 'This report link has expired' : 'A valid report link is required',
+          reason: v.reason
+        });
+      }
+    }
+
     const session = getSessionById(req.params.id);
     if (!session) return res.status(404).json({ error: 'Session not found' });
 

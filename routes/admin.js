@@ -1,7 +1,8 @@
 import express from 'express';
 import bcrypt from 'bcryptjs';
 import { v4 as uuidv4 } from 'uuid';
-import { getBetaSignups, getBetaSignupStats, deleteBetaSignup, getAllRiders, getRiderById, getRiderByEmail, createRider, updateRider, deleteRider, createPromoCode, listPromoCodes, getPromoCode, setPromoActive, addReportCredits, getAllFeedback, getFeedbackById, setFeedbackApproval, setFeedbackFeatured, deleteFeedback, deleteSession, updateSession } from '../lib/db.js';
+import { getBetaSignups, getBetaSignupStats, deleteBetaSignup, getAllRiders, getRiderById, getRiderByEmail, createRider, updateRider, deleteRider, createPromoCode, listPromoCodes, getPromoCode, setPromoActive, addReportCredits, getAllFeedback, getFeedbackById, setFeedbackApproval, setFeedbackFeatured, deleteFeedback, deleteSession, updateSession, getRiderSessionsForAdmin, getRecentSessions, getSessionById } from '../lib/db.js';
+import { signReportUrl } from '../lib/reportLink.js';
 import { requireAdmin } from '../lib/middleware/auth.js';
 
 const router = express.Router();
@@ -127,6 +128,32 @@ router.patch('/riders/:id', (req, res) => {
     const updated = updateRider(rider.id, updates);
     res.json({ success: true, rider: updated });
   } catch (err) { res.status(500).json({ error: 'Failed' }); }
+});
+
+// Admin: all sessions/reports for a specific rider (troubleshooting drill-down).
+router.get('/riders/:id/sessions', (req, res) => {
+  try {
+    const rider = getRiderById(req.params.id);
+    if (!rider) return res.status(404).json({ error: 'Rider not found' });
+    res.json({ sessions: getRiderSessionsForAdmin(rider.id) });
+  } catch (err) { console.error('[admin/riders sessions]', err); res.status(500).json({ error: 'Failed' }); }
+});
+
+// Admin: mint a short-lived signed link to download any session's report PDF
+// (for troubleshooting). Requires admin key (router-level requireAdmin).
+router.get('/sessions/:id/report-link', (req, res) => {
+  try {
+    const session = getSessionById(req.params.id);
+    if (!session) return res.status(404).json({ error: 'Session not found' });
+    res.json({ url: signReportUrl(session.id) });
+  } catch (err) { console.error('[admin report-link]', err); res.status(500).json({ error: 'Failed' }); }
+});
+
+// Admin: recent sessions across ALL riders (spot failures at a glance).
+router.get('/sessions/recent', (req, res) => {
+  try {
+    res.json({ sessions: getRecentSessions(req.query.limit) });
+  } catch (err) { console.error('[admin/sessions recent]', err); res.status(500).json({ error: 'Failed' }); }
 });
 
 router.delete('/sessions/:id', (req, res) => {
