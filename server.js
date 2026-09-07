@@ -4,6 +4,7 @@ import cors from 'cors';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
+import crypto from 'crypto';
 import { cleanExpiredSessions, migrateLegacyBetaSignups, initDb, createSession, getDeviceSessions, getAllSessions, getSessionById, getEntitlement, consumeReportCredit, addReportCredits } from './lib/db.js';
 import { analyzeCSV } from './lib/analyzer.js';
 import { generateReport } from './lib/reportGenerator.js';
