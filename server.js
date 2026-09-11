@@ -59,10 +59,26 @@ app.use('/api', checkoutRoutes);  // /api/checkout/:product (JSON body, auth)
 // flow and does NOT call these, so gating them behind requireAuth closes a free-tier
 // leak with no user-facing impact. Revisit once the credit/entitlement system (P1)
 // lands — the free report should decrement a credit, not be wide open.
+// UPLOAD IS THE PAYWALL (P2 redesign): analyzing/uploading a session is what
+// consumes a token. When the rider is out of tokens we block here with a 402
+// so they never do the work, and the frontend shows the "out of tokens" CTA.
+// (PDF download is now FREE — the token was already spent at upload.)
 app.post('/api/analyze', requireAuth, upload.single('file'), (req, res) => {
   try {
     const csv = req.file ? req.file.buffer.toString('utf-8') : req.body.csv;
     if (!csv) return res.status(400).json({ error: 'No CSV provided' });
+
+    const ent = getEntitlement(req.riderId);
+    if (ent && !ent.canGenerate) {
+      return res.status(402).json({
+        error: 'Out of tokens',
+        paywall: true,
+        reportCredits: ent.reportCredits,
+        plan: ent.plan,
+        message: 'Out of tokens \u2014 please purchase from the Membership page or redeem a promo code from the menu.'
+      });
+    }
+
     const data = analyzeCSV(csv);
     return res.json({ success: true, data });
   } catch (err) { return res.status(500).json({ error: err.message }); }
@@ -79,11 +95,11 @@ app.post('/api/report', requireAuth, upload.single('file'), async (req, res) => 
     const ent = getEntitlement(req.riderId);
     if (ent && !ent.canGenerate) {
       return res.status(402).json({
-        error: 'No report credits remaining',
+        error: 'Out of tokens',
         paywall: true,
         reportCredits: ent.reportCredits,
         plan: ent.plan,
-        message: "You've used your free analysis. Subscribe or enter a promo code to unlock more reports."
+        message: 'Out of tokens \u2014 please purchase from the Membership page or redeem a promo code from the menu.'
       });
     }
 
@@ -98,7 +114,7 @@ app.post('/api/report', requireAuth, upload.single('file'), async (req, res) => 
     // Consume AFTER successful generation so a failure never burns a credit.
     const after = consumeReportCredit(req.riderId);
     if (!after) {
-      return res.status(402).json({ error: 'No report credits remaining', paywall: true });
+      return res.status(402).json({ error: 'Out of tokens', paywall: true, message: 'Out of tokens \u2014 please purchase from the Membership page or redeem a promo code from the menu.' });
     }
 
     res.setHeader('Content-Type', 'application/pdf');
@@ -127,11 +143,11 @@ app.post('/api/report/email', requireAuth, upload.single('file'), async (req, re
     const ent = getEntitlement(req.riderId);
     if (ent && !ent.canGenerate) {
       return res.status(402).json({
-        error: 'No report credits remaining',
+        error: 'Out of tokens',
         paywall: true,
         reportCredits: ent.reportCredits,
         plan: ent.plan,
-        message: "You've used your free analysis. Subscribe or enter a promo code to unlock more reports."
+        message: 'Out of tokens \u2014 please purchase from the Membership page or redeem a promo code from the menu.'
       });
     }
 
@@ -146,7 +162,7 @@ app.post('/api/report/email', requireAuth, upload.single('file'), async (req, re
     // repeatedly email themselves reports on a single credit.
     const after = consumeReportCredit(req.riderId);
     if (!after) {
-      return res.status(402).json({ error: 'No report credits remaining', paywall: true });
+      return res.status(402).json({ error: 'Out of tokens', paywall: true, message: 'Out of tokens \u2014 please purchase from the Membership page or redeem a promo code from the menu.' });
     }
     const sendResult = await sendReportEmail(email, riderName, pdfBuffer, analysis, {
       specials: req.body.specials !== 'false'

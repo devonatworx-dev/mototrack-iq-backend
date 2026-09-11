@@ -1,9 +1,18 @@
 import express from 'express';
 import bcrypt from 'bcryptjs';
 import { v4 as uuidv4 } from 'uuid';
-import { getBetaSignups, getBetaSignupStats, deleteBetaSignup, getAllRiders, getRiderById, getRiderByEmail, createRider, updateRider, deleteRider, createPromoCode, listPromoCodes, getPromoCode, setPromoActive, addReportCredits, getAllFeedback, getFeedbackById, setFeedbackApproval, setFeedbackFeatured, deleteFeedback, deleteSession, updateSession, getRiderSessionsForAdmin, getRecentSessions, getSessionById } from '../lib/db.js';
+import { getBetaSignups, getBetaSignupStats, deleteBetaSignup, getBetaSignupByEmail, setBetaConfirmToken, markBetaSignupConverted, getAllRiders, getRiderById, getRiderByEmail, createRider, updateRider, deleteRider, createPromoCode, listPromoCodes, getPromoCode, setPromoActive, addReportCredits, getAllFeedback, getFeedbackById, setFeedbackApproval, setFeedbackFeatured, deleteFeedback, deleteSession, updateSession, getRiderSessionsForAdmin, getRecentSessions, getSessionById } from '../lib/db.js';
 import { signReportUrl } from '../lib/reportLink.js';
+import { sendCredentialsEmail, sendBetaConfirmEmail } from '../lib/email.js';
 import { requireAdmin } from '../lib/middleware/auth.js';
+
+// Generate a readable but strong temporary password (no ambiguous chars).
+function genTempPassword(len = 12) {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
+  let out = '';
+  for (let i = 0; i < len; i++) out += chars[Math.floor(Math.random() * chars.length)];
+  return out;
+}
 
 const router = express.Router();
 
@@ -23,6 +32,106 @@ router.get('/signups/stats', (req, res) => {
 router.delete('/signups/:email', (req, res) => {
   try { deleteBetaSignup(req.params.email); res.json({ success: true }); }
   catch (err) { res.status(500).json({ error: 'Failed' }); }
+});
+
+// Admin: (re)send the double opt-in confirmation email for a PENDING signup.
+// Unlike the public /api/beta/resend (which is enumeration-safe and silent),
+// this returns real status so the admin knows if it actually sent. Mints a fresh
+// confirm token + 7-day expiry each time. Refuses if already confirmed.
+router.post('/signups/:email/resend-confirm', async (req, res) => {
+  try {
+    const email = String(req.params.email || '').trim().toLowerCase();
+    const signup = getBetaSignupByEmail(email);
+    if (!signup) return res.status(404).json({ error: 'Waitlist signup not found' });
+    if (signup.confirmed) return res.status(409).json({ error: 'This signup is already confirmed.' });
+    const confirmToken = uuidv4();
+    const expiry = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    setBetaConfirmToken(email, confirmToken, expiry);
+    const mail = await sendBetaConfirmEmail(email, signup.firstName, confirmToken);
+    if (!mail || mail.success === false) {
+      return res.status(502).json({ error: (mail && mail.error) || 'Email send failed', emailSent: false });
+    }
+    res.json({ success: true, emailSent: true, email });
+  } catch (err) {
+    console.error('[admin/resend-confirm]', err);
+    res.status(500).json({ error: err.message || 'Failed' });
+  }
+});
+
+// Promote a CONFIRMED waitlist signup to a full member account, in one call:
+//   1. auto-generate a temp password
+//   2. create a pre-verified rider (skips email verification)
+//   3. grant intro report credits (default 1 = "first report FREE")
+//   4. email the rider their credentials + sign-in link
+//   5. mark the signup as converted so it drops off the pending list
+// Body (all optional): { credits?, plan?, password? }
+//   - credits: number of report credits (default 1). Note: new riders already
+//     get 1 credit by DB default, so we only ADD extra beyond that.
+//   - password: override the auto-generated temp password.
+router.post('/signups/:email/promote', async (req, res) => {
+  try {
+    const email = String(req.params.email || '').trim().toLowerCase();
+    const signup = getBetaSignupByEmail(email);
+    if (!signup) return res.status(404).json({ error: 'Waitlist signup not found' });
+    if (!signup.confirmed) {
+      return res.status(409).json({ error: 'This signup has not confirmed their email yet. Only confirmed signups can be promoted.' });
+    }
+    if (getRiderByEmail(email)) {
+      return res.status(409).json({ error: 'A rider account with that email already exists.' });
+    }
+
+    const tempPassword = req.body?.password && String(req.body.password).length >= 6
+      ? String(req.body.password)
+      : genTempPassword();
+    // Default to 1 credit total. New riders already receive 1 by DB default,
+    // so only add the extra beyond the built-in first credit.
+    const requestedCredits = req.body?.credits === undefined ? 1 : parseInt(req.body.credits, 10);
+    const credits = Number.isFinite(requestedCredits) && requestedCredits >= 0 ? requestedCredits : 1;
+    const plan = req.body?.plan || null;
+
+    const id = uuidv4();
+    const now = new Date().toISOString();
+    const passwordHash = bcrypt.hashSync(tempPassword, 10);
+    createRider({
+      id,
+      firstName: signup.firstName,
+      lastName: signup.lastName || '',
+      email,
+      passwordHash,
+      bikes: signup.bike || null,
+      primaryTrack: signup.track || null,
+      experience: signup.experience || null,
+      consentAt: signup.confirmedAt || now
+    });
+    // Pre-verify + set plan intent (createRider inserts verified=0).
+    updateRider(id, { verified: 1, verifyToken: null, verifyTokenExpiry: null, plan });
+
+    // New riders default to 1 credit; top up to the requested total.
+    let entitlement = null;
+    const extra = credits - 1;
+    if (extra > 0) entitlement = addReportCredits(id, extra);
+
+    // Mark the signup converted so it leaves the pending list.
+    markBetaSignupConverted(email, id);
+
+    // Email the rider their credentials. Awaited so we can report send status,
+    // but a delivery failure does NOT roll back the account (admin can resend).
+    const mail = await sendCredentialsEmail(email, signup.firstName, tempPassword, { credits });
+
+    const rider = getRiderById(id);
+    const { passwordHash: _ph, verifyToken: _vt, resetToken: _rt, resetTokenExpiry: _re, ...safe } = rider;
+    res.status(201).json({
+      success: true,
+      rider: safe,
+      credits,
+      entitlement,
+      emailSent: !!(mail && mail.success),
+      emailError: mail && mail.success === false ? mail.error : undefined
+    });
+  } catch (err) {
+    console.error('[admin/signups promote]', err);
+    res.status(500).json({ error: err.message || 'Failed' });
+  }
 });
 
 // ── Feedback moderation ──────────────────────────────────────────────
@@ -224,6 +333,23 @@ router.post('/riders/:id/grant-credits', (req, res) => {
     const entitlement = addReportCredits(rider.id, amount);
     res.json({ success: true, entitlement });
   } catch (err) { console.error(err); res.status(500).json({ error: 'Failed' }); }
+});
+
+// Absolute SET of a rider's token balance (admin/QA). Unlike grant-credits (which
+// adds), this sets reportCredits to an exact value — handy for resetting a test
+// account to a known state. Body: { tokens: <int >=0>, resetGenerated?: bool }
+router.post('/riders/:id/set-tokens', (req, res) => {
+  try {
+    const tokens = parseInt(req.body.tokens, 10);
+    if (!Number.isFinite(tokens) || tokens < 0) return res.status(400).json({ error: 'tokens (>=0) required' });
+    const rider = getRiderById(req.params.id);
+    if (!rider) return res.status(404).json({ error: 'Rider not found' });
+    const updates = { reportCredits: tokens };
+    if (req.body.resetGenerated) updates.reportsGenerated = 0;
+    updateRider(rider.id, updates);
+    const after = getRiderById(rider.id);
+    res.json({ success: true, reportCredits: after.reportCredits, reportsGenerated: after.reportsGenerated });
+  } catch (err) { console.error('[admin/set-tokens]', err); res.status(500).json({ error: err.message || 'Failed' }); }
 });
 
 export default router;

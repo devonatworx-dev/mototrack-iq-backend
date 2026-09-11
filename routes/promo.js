@@ -19,7 +19,7 @@ router.post('/redeem', requireAuth, (req, res) => {
     }
     res.json({
       success: true,
-      message: `Success! ${result.creditsGranted} report credit${result.creditsGranted === 1 ? '' : 's'} added.`,
+      message: `Success! ${result.creditsGranted} token${result.creditsGranted === 1 ? '' : 's'} added.`,
       creditsGranted: result.creditsGranted,
       entitlement: result.entitlement
     });

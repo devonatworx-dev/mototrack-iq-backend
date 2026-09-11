@@ -1,6 +1,6 @@
 import express from 'express';
 import { v4 as uuidv4 } from 'uuid';
-import { getSessionsByRider, getSessionById, createSessionData, getEntitlement, consumeReportCredit } from '../lib/db.js';
+import { getSessionsByRider, getSessionById, createSessionData, getEntitlement, consumeReportCredit, getRiderById } from '../lib/db.js';
 import { analyzeCSV } from '../lib/analyzer.js';
 import { generateReport } from '../lib/reportGenerator.js';
 import { buildDayProgress, generateDayReport } from '../lib/dayReport.js';
@@ -23,9 +23,40 @@ router.post('/', requireAuth, (req, res) => {
     let analysis;
     try { analysis = analyzeCSV(rawCsv); }
     catch (e) { return res.status(400).json({ error: `CSV error: ${e.message}` }); }
-    const session = createSessionData({ id: uuidv4(), riderId: req.riderId, name: name || `Session on ${analysis.summary.trackName}`, track: track || analysis.summary.trackName, bike: bike||null, date: date||null, csvContent: rawCsv, analysisData: analysis });
+    // UPLOAD IS THE PAYWALL (P2): saving a session consumes one token, unless the
+    // rider is on an unlimited plan. Block here if out of tokens (belt-and-braces
+    // with the /api/analyze gate) so a session is never persisted for free.
+    const ent = getEntitlement(req.riderId);
+    if (ent && !ent.canGenerate) {
+      return res.status(402).json({
+        error: 'Out of tokens',
+        paywall: true,
+        reportCredits: ent.reportCredits,
+        plan: ent.plan,
+        message: 'Out of tokens \u2014 please purchase from the Membership page or redeem a promo code from the menu.'
+      });
+    }
+
+    // Fall back to the rider's profile bike when the upload doesn't specify one
+    // (the portal upload flow currently omits bike). `bikes` may be a comma list;
+    // use the first entry as the default machine for this session.
+    let bikeVal = bike || null;
+    if (!bikeVal) {
+      const rider = getRiderById(req.riderId);
+      if (rider && rider.bikes) bikeVal = String(rider.bikes).split(',')[0].trim() || null;
+    }
+    const session = createSessionData({ id: uuidv4(), riderId: req.riderId, name: name || `Session on ${analysis.summary.trackName}`, track: track || analysis.summary.trackName, bike: bikeVal, date: date||null, csvContent: rawCsv, analysisData: analysis });
+
+    // Consume the token AFTER the session is safely persisted, so a failed save
+    // never burns a token. Unlimited plans are not decremented.
+    const after = consumeReportCredit(req.riderId);
     const { csvContent, ...safe } = session;
-    res.status(201).json({ session: safe, analysis });
+    res.status(201).json({
+      session: safe,
+      analysis,
+      reportCredits: after ? after.reportCredits : (ent ? ent.reportCredits : null),
+      reportsGenerated: after ? after.reportsGenerated : undefined
+    });
   } catch (err) { console.error(err); res.status(500).json({ error: 'Failed' }); }
 });
 
@@ -90,11 +121,11 @@ router.post('/:id/report', requireAuth, async (req, res) => {
     const ent = getEntitlement(req.riderId);
     if (ent && !ent.canGenerate) {
       return res.status(402).json({
-        error: 'No report credits remaining',
+        error: 'Out of tokens',
         paywall: true,
         reportCredits: ent.reportCredits,
         plan: ent.plan,
-        message: "You've used your free analysis. Subscribe or enter a promo code to unlock more reports."
+        message: 'Out of tokens \u2014 please purchase from the Membership page or redeem a promo code from the menu.'
       });
     }
 
@@ -105,7 +136,7 @@ router.post('/:id/report', requireAuth, async (req, res) => {
     // were exhausted between the check and now (race) — treat as paywall.
     const after = consumeReportCredit(req.riderId);
     if (!after) {
-      return res.status(402).json({ error: 'No report credits remaining', paywall: true });
+      return res.status(402).json({ error: 'Out of tokens', paywall: true, message: 'Out of tokens \u2014 please purchase from the Membership page or redeem a promo code from the menu.' });
     }
 
     res.setHeader('Content-Type', 'application/pdf');
