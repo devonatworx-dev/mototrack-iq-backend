@@ -17,7 +17,7 @@ function newConfirmExpiry() { return new Date(Date.now() + CONFIRM_TTL_MS).toISO
 // generate a lead). Re-submitting an unconfirmed email re-sends the confirm link.
 export async function signupHandler(req, res) {
   try {
-    const { firstName, lastName, bike, track, experience, source, consent } = req.body;
+    const { firstName, lastName, bike, track, experience, lapTimer, source, consent } = req.body;
     const email = normEmail(req.body.email);
     if (!firstName || !lastName || !email) return res.status(400).json({ error: 'firstName, lastName, email required' });
     if (!consent) return res.status(400).json({ error: 'Consent required' });
@@ -39,6 +39,7 @@ export async function signupHandler(req, res) {
     createBetaSignup({
       id: uuidv4(), firstName, lastName, email,
       bike: bike || null, track: track || null, experience: experience || null,
+      lapTimer: lapTimer || null,
       source: source || 'direct', consent: 1, confirmToken,
       confirmTokenExpiry: newConfirmExpiry(),
       submittedAt: new Date().toISOString(), ip

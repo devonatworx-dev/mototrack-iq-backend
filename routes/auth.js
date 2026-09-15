@@ -29,7 +29,7 @@ function normEmail(e) { return String(e || '').trim().toLowerCase(); }
 // No JWT is returned — the account is not usable until email is confirmed.
 router.post('/register', async (req, res) => {
   try {
-    const { firstName, lastName, phone, experience, riderType, bikes, primaryTrack, ontarioResident } = req.body;
+    const { firstName, lastName, phone, experience, riderType, bikes, primaryTrack, lapTimer, ontarioResident } = req.body;
     const email = normEmail(req.body.email);
     if (!firstName || !lastName || !email) return res.status(400).json({ error: 'firstName, lastName, and email are required' });
     // Territory safeguard: MotoTrackIQ (Ontario sole proprietorship) currently
@@ -54,7 +54,7 @@ router.post('/register', async (req, res) => {
     createRider({
       id: uuidv4(), firstName, lastName, email, phone: phone || null,
       passwordHash: null, experience: experience || null, riderType: riderType || null,
-      bikes: bikes || null, primaryTrack: primaryTrack || null, notes: null,
+      bikes: bikes || null, primaryTrack: primaryTrack || null, lapTimer: lapTimer || null, notes: null,
       verifyToken, verifyTokenExpiry: new Date(Date.now() + VERIFY_TTL_MS).toISOString(),
       ontarioAttestedAt
     });
@@ -163,8 +163,8 @@ router.get('/me', requireAuth, (req, res) => {
 
 router.put('/profile', requireAuth, (req, res) => {
   try {
-    const { firstName, lastName, phone, experience, riderType, bikes, primaryTrack, notes } = req.body;
-    const updated = updateRider(req.riderId, { firstName, lastName, phone, experience, riderType, bikes, primaryTrack, notes });
+    const { firstName, lastName, phone, experience, riderType, bikes, primaryTrack, lapTimer, notes } = req.body;
+    const updated = updateRider(req.riderId, { firstName, lastName, phone, experience, riderType, bikes, primaryTrack, lapTimer, notes });
     res.json({ rider: sanitize(updated) });
   } catch (err) { console.error(err); res.status(500).json({ error: 'Update failed' }); }
 });
