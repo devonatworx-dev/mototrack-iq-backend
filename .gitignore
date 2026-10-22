@@ -33,3 +33,7 @@ build/
 credentials.json
 service-account-*.json
 config/token.json
+
+# Rider PII / local DB snapshots — never publish (repo is PUBLIC)
+data/
+*.db.bak*
