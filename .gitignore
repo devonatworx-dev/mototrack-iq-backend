@@ -5,6 +5,10 @@ node_modules/
 .env
 .env.*
 *.env
+# ...but the documented env CONTRACT is safe to share and must be committed,
+# otherwise the next dev repeats the "file exists but nothing reads it" bug.
+# The example contains placeholders only — never real values.
+!.env.example
 
 # Logs
 logs/
