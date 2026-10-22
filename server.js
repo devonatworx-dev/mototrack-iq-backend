@@ -22,6 +22,7 @@ import promoRoutes from './routes/promo.js';
 import feedbackRoutes from './routes/feedback.js';
 import checkoutRoutes from './routes/checkout.js';
 import { requireAuth } from './lib/middleware/auth.js';
+import config from './lib/config.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = parseInt(process.env.PORT || '3009', 10);
@@ -191,7 +192,8 @@ app.post('/api/report/email', requireAuth, upload.single('file'), async (req, re
 });
 
 // ── Device upload (BLE Sync → DB, optional auth to link to rider account) ───
-const JWT_SECRET = process.env.JWT_SECRET || '<REDACTED-JWT-LITERAL>';
+// Required secret, no public fallback (see lib/config.js for why).
+const JWT_SECRET = config.jwtSecret;
 app.post('/api/device/upload', upload.single('file'), (req, res) => {
   try {
     const csv = req.file ? req.file.buffer.toString('utf-8') : req.body.csv;

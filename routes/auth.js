@@ -5,9 +5,11 @@ import { v4 as uuidv4 } from 'uuid';
 import { createRider, getRiderByEmail, getRiderById, getRiderByVerifyToken, updateRider } from '../lib/db.js';
 import { sendVerifyEmail, sendPasswordResetEmail, sendWelcomeEmail } from '../lib/email.js';
 import { requireAuth } from '../lib/middleware/auth.js';
+import config from '../lib/config.js';
 
 const router = express.Router();
-const JWT_SECRET = process.env.JWT_SECRET || '<REDACTED-JWT-LITERAL>';
+// Required secret, no fallback (see lib/config.js for why).
+const JWT_SECRET = config.jwtSecret;
 
 function signToken(riderId) { return jwt.sign({ riderId }, JWT_SECRET, { expiresIn: '30d' }); }
 function sanitize(rider) { const { passwordHash, verifyToken, verifyTokenExpiry, resetToken, resetTokenExpiry, ...s } = rider; return s; }
