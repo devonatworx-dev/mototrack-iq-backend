@@ -41,3 +41,6 @@ config/token.json
 # Rider PII / local DB snapshots — never publish (repo is PUBLIC)
 data/
 *.db.bak*
+
+# Local operational scripts that carry production credentials / one-off data.
+scripts/restore-sessions-to-prod.mjs
