@@ -44,3 +44,6 @@ data/
 
 # Local operational scripts that carry production credentials / one-off data.
 scripts/restore-sessions-to-prod.mjs
+
+# local generated artifacts (not part of the repo)
+demo-report.pdf
