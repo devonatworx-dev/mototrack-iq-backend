@@ -3,7 +3,7 @@
 # Why this file exists: the default gitleaks ruleset did NOT flag the exact
 # line that caused the P0 incident:
 #
-#   const JWT_SECRET = process.env.JWT_SECRET || '<REDACTED-JWT-LITERAL>';
+#   const JWT_SECRET = process.env.JWT_SECRET || '<the known leaked literal>';
 #
 # Verified by test: a repo containing only that line produced 0 leaks under
 # the default rules, and the full-history scan of this repo also reported 0
@@ -30,8 +30,10 @@ secretGroup = 0
 [[rules]]
 id = "known-leaked-jwt-literal"
 description = "The MotoTrackIQ JWT secret literal that was committed to the public repo"
-regex = '''<REDACTED-JWT-LITERAL>'''
-keywords = ["<REDACTED-JWT-LITERAL>"]
+# Matches the leaked literal's SHAPE without spelling the value out, so this
+# config file does not itself republish the secret it is meant to catch.
+regex = '''mototrackiq-jwt-secret-[0-9]{4}-v[0-9]'''
+keywords = ["mototrackiq-jwt-secret"]
 secretGroup = 0
 
 [[rules]]
