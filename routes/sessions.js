@@ -137,7 +137,10 @@ router.post('/:id/report', requireAuth, async (req, res) => {
     if (!hasTrackMap(session.analysisData)) {
       try {
         const bf = backfillTrackMap(session);
-        if (bf.fixed) session.analysisData = bf.session.analysisData;
+        // Use the returned session either way: `fixed` is false only when the
+        // DB write failed, and in that case the generated map is still valid
+        // for THIS report (it just will not be persisted).
+        if (bf.session) session.analysisData = bf.session.analysisData;
       } catch (err) {
         console.error('[sessions] track map backfill failed:', err.message);
       }
@@ -211,7 +214,7 @@ router.post('/day-report', requireAuth, async (req, res) => {
       if (hasTrackMap(s.analysisData)) continue;
       try {
         const bf = backfillTrackMap(s);
-        if (bf.fixed) s.analysisData = bf.session.analysisData;
+        if (bf.session) s.analysisData = bf.session.analysisData;
       } catch (err) {
         console.error('[sessions] day-report track map backfill failed:', err.message);
       }
