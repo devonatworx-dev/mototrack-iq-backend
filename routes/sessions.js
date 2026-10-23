@@ -1,6 +1,7 @@
 import express from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { getSessionsByRider, getSessionById, createSessionData, getEntitlement, consumeReportCredit, getRiderById } from '../lib/db.js';
+import { backfillTrackMap, hasTrackMap } from '../lib/trackMapBackfill.js';
 import { analyzeCSV } from '../lib/analyzer.js';
 import { generateReport } from '../lib/reportGenerator.js';
 import { buildDayProgress, generateDayReport } from '../lib/dayReport.js';
@@ -129,6 +130,19 @@ router.post('/:id/report', requireAuth, async (req, res) => {
       });
     }
 
+    // Legacy sessions (uploaded before the analyzer emitted trackMap) have no
+    // map in their stored analysis, so the PDF renders without the speed-heat
+    // racing line. The stored CSV is still present, so regenerate the map once
+    // and persist it. Failure is non-fatal: the rider still gets the report.
+    if (!hasTrackMap(session.analysisData)) {
+      try {
+        const bf = backfillTrackMap(session);
+        if (bf.fixed) session.analysisData = bf.session.analysisData;
+      } catch (err) {
+        console.error('[sessions] track map backfill failed:', err.message);
+      }
+    }
+
     const { riderName, bikeName } = req.body;
     const pdf = await generateReport(session.analysisData, { riderName: riderName||'Rider', bikeName: bikeName||session.bike||'' });
 
@@ -189,6 +203,20 @@ router.post('/day-report', requireAuth, async (req, res) => {
       return sd === date || csd === date;
     });
     if (daySessions.length === 0) return res.status(404).json({ error: 'No sessions found for that date' });
+
+    // Same legacy gap as the single-session report: a day report picks the
+    // first session that already has a track map, so a day of legacy
+    // sessions renders without one. Backfill any that are missing it.
+    for (const s of daySessions) {
+      if (hasTrackMap(s.analysisData)) continue;
+      try {
+        const bf = backfillTrackMap(s);
+        if (bf.fixed) s.analysisData = bf.session.analysisData;
+      } catch (err) {
+        console.error('[sessions] day-report track map backfill failed:', err.message);
+      }
+    }
+
     const dayData = buildDayProgress(daySessions);
     const pdf = await generateDayReport(dayData, {
       riderName: riderName || 'Rider',
