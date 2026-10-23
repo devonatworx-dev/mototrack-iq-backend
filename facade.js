@@ -403,6 +403,28 @@ app.post('/api/device/upload', upload.single('file'), async (req, res) => {
 });
 
 // ── Everything else → proxy straight to production ──────────────────────────
+// ── Beta waitlist endpoints ───────────────────────────────────────────────────
+// Production still runs the JUNE build, which has ONLY /api/beta-signup and
+// /api/beta/count. The portal's double-opt-in flow also calls
+// /api/beta/confirm and /api/beta/resend, which 404 there — and Express
+// answers an unknown route with an HTML page, so the portal's `r.json()`
+// throws and the user sees the misleading "Cannot reach server".
+//
+// Until the current build is deployed, answer these with clean JSON so the
+// portal can say what is actually true instead of blaming the network.
+app.post('/api/beta/confirm', (_req, res) => {
+  res.status(501).json({
+    error: 'Confirmation is not available on this server build yet.',
+    code: 'not_supported'
+  });
+});
+app.post('/api/beta/resend', (_req, res) => {
+  res.status(501).json({
+    error: 'Resend is not available on this server build yet.',
+    code: 'not_supported'
+  });
+});
+
 app.use('/api', async (req, res) => {
   try {
     const token = bearerFrom(req);
