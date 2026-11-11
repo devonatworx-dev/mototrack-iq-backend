@@ -4,7 +4,9 @@ import jwt from 'jsonwebtoken';
 import { v4 as uuidv4 } from 'uuid';
 import { createRider, getRiderByEmail, getRiderById, getRiderByVerifyToken, updateRider } from '../lib/db.js';
 import { sendVerifyEmail, sendPasswordResetEmail, sendWelcomeEmail } from '../lib/email.js';
-import { requireAuth } from '../lib/middleware/auth.js';
+import { requireAuth } from '../lib/middleware/clerk-auth.js';
+import { getAuth } from '@clerk/express';
+import { getRiderByClerkId } from '../lib/db.js';
 import config from '../lib/config.js';
 
 const router = express.Router();
@@ -257,5 +259,59 @@ router.post('/change-password', requireAuth, (req, res) => {
     res.json({ success: true });
   } catch (err) { console.error(err); res.status(500).json({ error: 'Change failed' }); }
 });
+
+
+// ── Clerk Sign-In Sync ────────────────────────────────────────────────────────
+// Called by the portal after Clerk sign-in. Creates a rider record if one doesn't
+// exist, or returns the existing one. Rider profile data comes from the request
+// body (populated by Clerk's user object in the frontend).
+router.post('/clerk/sync', requireAuth, async (req, res) => {
+  try {
+    const clerkUserId = req.clerkUserId;
+    if (!clerkUserId) return res.status(401).json({ error: 'No Clerk user ID' });
+
+    // Check if rider already exists
+    let rider = await getRiderByClerkId(clerkUserId);
+    if (rider) {
+      return res.json({ success: true, rider: sanitize(rider), isNew: false });
+    }
+
+    // First sign-in — create the rider record from Clerk profile data
+    const { firstName, lastName, email, phone, experience, riderType, bikes, primaryTrack, lapTimer } = req.body;
+    if (!firstName || !lastName || !email) {
+      return res.status(400).json({ error: 'firstName, lastName, and email are required on first sign-in' });
+    }
+
+    const existing = await getRiderByEmail(normEmail(email));
+    if (existing) {
+      // Link existing rider to this Clerk account
+      await updateRider(existing.id, { clerkUserId });
+      return res.json({ success: true, rider: sanitize(existing), isNew: false, linked: true });
+    }
+
+    // Create brand new rider
+    const id = uuidv4();
+    await createRider({
+      id, firstName, lastName,
+      email: normEmail(email),
+      phone: phone || null,
+      clerkUserId,
+      experience: experience || null,
+      riderType: riderType || null,
+      bikes: bikes || null,
+      primaryTrack: primaryTrack || null,
+      lapTimer: lapTimer || null,
+      ontarioAttestedAt: new Date().toISOString(),
+      verified: 1  // Clerk-verified users skip email verification
+    });
+
+    rider = await getRiderByEmail(normEmail(email));
+    res.json({ success: true, rider: sanitize(rider), isNew: true });
+  } catch (err) {
+    console.error('/auth/clerk/sync error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 
 export default router;

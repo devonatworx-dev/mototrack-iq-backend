@@ -21,7 +21,7 @@ import deviceReportsRoutes from './routes/device-reports.js';
 import promoRoutes from './routes/promo.js';
 import feedbackRoutes from './routes/feedback.js';
 import checkoutRoutes from './routes/checkout.js';
-import { requireAuth } from './lib/middleware/auth.js';
+import { requireAuth, clerkMiddleware } from './lib/middleware/clerk-auth.js';
 import config from './lib/config.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -36,6 +36,9 @@ app.use(cors({ origin: true, credentials: true }));
 // LemonSqueezy webhook needs the RAW body for HMAC signature verification, so it
 // MUST be mounted with express.raw() BEFORE the global express.json() parser.
 app.use('/api/webhooks/lemonsqueezy', express.raw({ type: '*/*', limit: '2mb' }), checkoutRoutes);
+
+// Clerk session middleware — must be added before any protected routes
+app.use(clerkMiddleware());
 
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
