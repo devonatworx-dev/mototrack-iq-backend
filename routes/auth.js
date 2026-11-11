@@ -273,7 +273,7 @@ router.post('/clerk/sync', requireAuth, async (req, res) => {
     // Check if rider already exists
     let rider = await getRiderByClerkId(clerkUserId);
     if (rider) {
-      return res.json({ success: true, rider: sanitize(rider), isNew: false });
+      return res.json({ success: true, rider: sanitize(rider), isNew: false, consentRequired: !rider.consentAt });
     }
 
     // First sign-in — create the rider record from Clerk profile data
@@ -286,7 +286,7 @@ router.post('/clerk/sync', requireAuth, async (req, res) => {
     if (existing) {
       // Link existing rider to this Clerk account
       await updateRider(existing.id, { clerkUserId });
-      return res.json({ success: true, rider: sanitize(existing), isNew: false, linked: true });
+      return res.json({ success: true, rider: sanitize(existing), isNew: false, linked: true, consentRequired: !existing.consentAt });
     }
 
     // Create brand new rider
@@ -306,12 +306,45 @@ router.post('/clerk/sync', requireAuth, async (req, res) => {
     });
 
     rider = await getRiderByEmail(normEmail(email));
-    res.json({ success: true, rider: sanitize(rider), isNew: true });
+    res.json({ success: true, rider: sanitize(rider), isNew: true, consentRequired: true });
   } catch (err) {
     console.error('/auth/clerk/sync error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
 
+
+
+// ── Accept Consent & Send Welcome Email ──────────────────────────────────────
+// Called after the rider accepts T&C on the consent page.
+// Sets consentAt + ontarioAttestedAt, fires the welcome email.
+router.post('/clerk/accept-consent', requireAuth, async (req, res) => {
+  try {
+    const clerkUserId = req.clerkUserId;
+    if (!clerkUserId) return res.status(401).json({ error: 'Not authenticated' });
+
+    const rider = await getRiderByClerkId(clerkUserId);
+    if (!rider) return res.status(404).json({ error: 'Rider account not found. Complete sign-up first.' });
+    if (rider.consentAt) return res.json({ success: true, rider: sanitize(rider), alreadyConsented: true });
+
+    const now = new Date().toISOString();
+    await updateRider(rider.id, {
+      consentAt: now,
+      ontarioAttestedAt: rider.ontarioAttestedAt || now,
+      verified: 1,
+    });
+
+    // Send welcome email (non-blocking — don't fail the response if email fails)
+    sendWelcomeEmail(rider.email, rider.firstName, {
+      plan: rider.plan || 'free',
+    }).catch(err => console.error('Welcome email error:', err.message));
+
+    const updated = await getRiderByClerkId(clerkUserId);
+    res.json({ success: true, rider: sanitize(updated) });
+  } catch (err) {
+    console.error('/auth/clerk/accept-consent error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 export default router;
