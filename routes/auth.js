@@ -168,25 +168,68 @@ router.get('/me', requireAuth, (req, res) => {
   res.json({ rider: sanitize(rider) });
 });
 
+// Fields a rider may change about themselves. Only keys actually present in the
+// request body are written, so a partial update (for example just a name
+// change) never blanks the other columns.
+const PROFILE_FIELDS = ['firstName', 'lastName', 'phone', 'experience', 'riderType', 'bikes', 'primaryTrack', 'lapTimer', 'notes'];
+const PROFILE_MAX_LEN = { firstName: 60, lastName: 60, phone: 40, experience: 40, riderType: 40, bikes: 500, primaryTrack: 120, lapTimer: 120, notes: 2000 };
+
+export function pickProfileUpdates(body) {
+  const updates = {};
+  const src = body && typeof body === 'object' ? body : {};
+  for (const key of PROFILE_FIELDS) {
+    if (!Object.prototype.hasOwnProperty.call(src, key) || src[key] === undefined) continue;
+    const raw = src[key];
+    if (raw === null) {
+      if (key === 'firstName' || key === 'lastName') return { error: `${key} cannot be empty` };
+      updates[key] = null;
+      continue;
+    }
+    if (typeof raw !== 'string' && typeof raw !== 'number') return { error: `${key} must be text` };
+    const val = String(raw).trim();
+    if (val.length > PROFILE_MAX_LEN[key]) return { error: `${key} is too long` };
+    if (key === 'firstName' && !val) return { error: 'First name cannot be empty' };
+    // lastName may be blank (the riders column is NOT NULL, so store '').
+    updates[key] = key === 'lastName' ? val : (val || null);
+  }
+  return { updates };
+}
+
 router.put('/profile', requireAuth, (req, res) => {
   try {
-    const { firstName, lastName, phone, experience, riderType, bikes, primaryTrack, lapTimer, notes } = req.body;
-    const updated = updateRider(req.riderId, { firstName, lastName, phone, experience, riderType, bikes, primaryTrack, lapTimer, notes });
-    res.json({ rider: sanitize(updated) });
+    const { updates, error } = pickProfileUpdates(req.body);
+    if (error) return res.status(400).json({ error });
+    const rider = getRiderById(req.riderId);
+    if (!rider) return res.status(404).json({ error: 'Account not found' });
+    if (!Object.keys(updates).length) return res.status(400).json({ error: 'Nothing to update' });
+    const updated = updateRider(req.riderId, updates);
+    res.json({ success: true, rider: sanitize(updated) });
   } catch (err) { console.error(err); res.status(500).json({ error: 'Update failed' }); }
 });
 
-// ── Membership plan selection (Phase 2: intent only, no payment yet) ────────────────
-// Records the rider's chosen plan. Real entitlement/checkout is wired in Phase 3
-// once a payment processor is selected. Accepts a coarse plan id + optional detail.
+// ── Membership plan selection ───────────────────────────────────────────────
+// The riders.plan column is what getEntitlement() reads, and 'season' / 'pro'
+// there mean unlimited reports. So this route must never write a paid plan:
+// paid access only comes from a verified Lemon Squeezy webhook. 'free' and
+// 'per_event' grant nothing by themselves (per-event access is report credits),
+// so recording them as interest stays allowed.
 const ALLOWED_PLANS = ['free', 'per_event', 'season', 'pro'];
+const UNLIMITED_PLAN_IDS = ['season', 'pro'];
 router.post('/select-plan', requireAuth, (req, res) => {
   try {
-    const { plan } = req.body;
+    const { plan } = req.body || {};
     if (!ALLOWED_PLANS.includes(plan)) {
       return res.status(400).json({ error: 'Invalid plan. Choose one of: ' + ALLOWED_PLANS.join(', ') });
     }
-    // NOTE: this only records selection/intent. It does NOT grant paid entitlements.
+    if (UNLIMITED_PLAN_IDS.includes(plan)) {
+      return res.status(402).json({ error: 'Paid plans are bought through checkout.', code: 'checkout_required' });
+    }
+    const rider = getRiderById(req.riderId);
+    if (!rider) return res.status(404).json({ error: 'Account not found' });
+    // Never downgrade a paid plan from here.
+    if (rider.plan && !['free', 'per_event'].includes(rider.plan)) {
+      return res.json({ success: true, plan: rider.plan, rider: sanitize(rider) });
+    }
     const updated = updateRider(req.riderId, { plan });
     res.json({ success: true, plan, rider: sanitize(updated) });
   } catch (err) { console.error(err); res.status(500).json({ error: 'Could not save plan' }); }
