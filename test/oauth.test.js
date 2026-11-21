@@ -25,7 +25,7 @@ const require = createRequire(path.join(root, 'package.json'));
 const bcrypt = require('bcryptjs');
 const express = require('express');
 
-const { initDb, createRider, updateRider, getRiderByEmail, getEntitlement, getOAuthIdentity } = await import('../lib/db.js');
+const { initDb, createRider, updateRider, getRiderByEmail, getEntitlement, getOAuthIdentity, takeOAuthState: takeDbOAuthState, takeOAuthCode: takeDbOAuthCode } = await import('../lib/db.js');
 const { default: authRoutes } = await import('../routes/auth.js');
 
 let server;
@@ -105,6 +105,7 @@ test('Google and Microsoft start redirects hit the provider authorize endpoints'
 test('a verified Google sign-up creates a rider with consent, Ontario, and one free report', async () => {
   const started = await start('google', '?consent=1&ontario=1');
   const state = new URL(started.location).searchParams.get('state');
+  assert.equal(takeDbOAuthState(state), null);
   mockProvider((href) => {
     if (href.includes('oauth2.googleapis.com/token')) return jsonResponse({ access_token: 'g-token' });
     if (href.includes('openidconnect.googleapis.com')) {
@@ -124,6 +125,7 @@ test('a verified Google sign-up creates a rider with consent, Ontario, and one f
   assert.equal(landed.origin, 'http://127.0.0.1:43128');
   const code = landed.searchParams.get('oauth_code');
   assert.ok(code);
+  assert.equal(takeDbOAuthCode(code), null);
 
   const exchanged = await fetch(`${base}/api/auth/oauth/exchange`, {
     method: 'POST',

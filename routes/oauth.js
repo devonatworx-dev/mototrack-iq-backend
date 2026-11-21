@@ -13,18 +13,32 @@ import {
   randomState,
 } from '../lib/oauth.js';
 import { settleOAuthAccount } from '../lib/oauth-account.js';
+import { getRiderById } from '../lib/db.js';
 import {
-  getRiderById,
   saveOAuthCode,
   saveOAuthState,
   takeOAuthCode,
   takeOAuthState,
-} from '../lib/db.js';
+} from '../lib/oauth-handoff.js';
+import { rateLimit } from '../lib/rate-limit.js';
 import { turnstilePublicConfig } from '../lib/turnstile.js';
 
 const router = Router();
 const STATE_TTL_MS = 10 * 60 * 1000;
 const CODE_TTL_MS = 2 * 60 * 1000;
+
+// Separate from the email-login limit (default 8). Anonymous /start and
+// /callback were an unauthenticated write; the handoff is in memory now,
+// and this cap stops one client from filling that map.
+function oauthBrowserLimit(name) {
+  return rateLimit({
+    name,
+    windowMs: Number(process.env.AUTH_RATE_LIMIT_WINDOW_MS || 15 * 60 * 1000),
+    max: Number(process.env.OAUTH_RATE_LIMIT_MAX || 30),
+  });
+}
+const limitStart = oauthBrowserLimit('oauth-start');
+const limitCallback = oauthBrowserLimit('oauth-callback');
 
 function signToken(riderId) {
   return jwt.sign({ riderId }, config.jwtSecret, { expiresIn: '30d' });
@@ -62,7 +76,7 @@ router.get('/providers', (_req, res) => {
   });
 });
 
-router.get('/:provider/start', (req, res) => {
+router.get('/:provider/start', limitStart, (req, res) => {
   const provider = req.params.provider;
   if (!listProviders().includes(provider)) {
     return res.status(404).json({
@@ -97,7 +111,7 @@ router.get('/:provider/start', (req, res) => {
   res.redirect(url);
 });
 
-router.get('/:provider/callback', async (req, res) => {
+router.get('/:provider/callback', limitCallback, async (req, res) => {
   const provider = req.params.provider;
   if (!listProviders().includes(provider)) {
     return redirectToApp(res, { oauth_error: 'provider_disabled', login: '1' });

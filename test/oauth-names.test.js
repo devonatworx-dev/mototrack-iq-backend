@@ -57,6 +57,38 @@ test('microsoft id_token supplies the display name and the personal-tenant verif
   assert.equal(profile.emailVerified, true);
 });
 
+test('a verified id_token email replaces a different userinfo email', async () => {
+  const profile = await exchangeCode({
+    provider: 'microsoft',
+    code: 'c',
+    verifier: 'v',
+    redirectUri: 'http://127.0.0.1/cb',
+    env: { MICROSOFT_OAUTH_CLIENT_ID: 'cid', MICROSOFT_OAUTH_CLIENT_SECRET: 'sec' },
+    fetchImpl: async (url) => {
+      const href = String(url);
+      if (href.includes('/token')) {
+        return {
+          ok: true,
+          json: async () => ({
+            access_token: 't',
+            id_token: fakeIdToken({
+              aud: 'cid',
+              sub: 'ms-devon',
+              tid: '9188040d-6c67-4c5b-b112-36a304b66dad',
+              email: 'real@outlook.com',
+              name: 'Devon Smith',
+            }),
+          }),
+        };
+      }
+      return { ok: true, json: async () => ({ sub: 'ms-devon', email: 'other@example.com' }) };
+    },
+  });
+  assert.equal(profile.email, 'real@outlook.com');
+  assert.equal(profile.emailVerified, true);
+  assert.equal(profile.firstName, 'Devon');
+});
+
 test('a work account without xms_edov is not treated as verified', async () => {
   const profile = await exchangeCode({
     provider: 'microsoft',
