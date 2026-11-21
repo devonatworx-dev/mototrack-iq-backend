@@ -120,3 +120,33 @@ test('pickProfileUpdates only returns keys that were sent', () => {
   assert.deepEqual(pickProfileUpdates({ phone: '' }).updates, { phone: null });
   assert.deepEqual(pickProfileUpdates({ firstName: undefined, lastName: 'B' }).updates, { lastName: 'B' });
 });
+
+async function selectPlan(token, plan) {
+  const res = await fetch(`${base}/api/auth/select-plan`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ plan }),
+  });
+  return { status: res.status, body: await res.json() };
+}
+
+test('select-plan cannot grant a paid (unlimited) plan', async () => {
+  const token = seedRider('r-plan', 'plan@example.com');
+  for (const plan of ['season', 'pro']) {
+    const res = await selectPlan(token, plan);
+    assert.equal(res.status, 402, plan);
+    assert.equal(res.body.code, 'checkout_required');
+  }
+  const r = getRiderById('r-plan');
+  assert.ok(!['season', 'pro'].includes(r.plan));
+  const free = await selectPlan(token, 'free');
+  assert.equal(free.status, 200);
+  assert.equal(getRiderById('r-plan').plan, 'free');
+});
+
+test('select-plan never downgrades a rider who already paid for Season', async () => {
+  const token = seedRider('r-paid', 'paid@example.com');
+  const { updateRider } = await import('../lib/db.js');
+  updateRider('r-paid', { plan: 'season' });
+  const res = await selectPlan(token, 'free');
+  assert.equal(res.status, 200);
+  assert.equal(getRiderById('r-paid').plan, 'season');
+});

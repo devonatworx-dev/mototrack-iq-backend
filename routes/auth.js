@@ -207,17 +207,29 @@ router.put('/profile', requireAuth, (req, res) => {
   } catch (err) { console.error(err); res.status(500).json({ error: 'Update failed' }); }
 });
 
-// ── Membership plan selection (Phase 2: intent only, no payment yet) ────────────────
-// Records the rider's chosen plan. Real entitlement/checkout is wired in Phase 3
-// once a payment processor is selected. Accepts a coarse plan id + optional detail.
+// ── Membership plan selection ───────────────────────────────────────────────
+// The riders.plan column is what getEntitlement() reads, and 'season' / 'pro'
+// there mean unlimited reports. So this route must never write a paid plan:
+// paid access only comes from a verified Lemon Squeezy webhook. 'free' and
+// 'per_event' grant nothing by themselves (per-event access is report credits),
+// so recording them as interest stays allowed.
 const ALLOWED_PLANS = ['free', 'per_event', 'season', 'pro'];
+const UNLIMITED_PLAN_IDS = ['season', 'pro'];
 router.post('/select-plan', requireAuth, (req, res) => {
   try {
-    const { plan } = req.body;
+    const { plan } = req.body || {};
     if (!ALLOWED_PLANS.includes(plan)) {
       return res.status(400).json({ error: 'Invalid plan. Choose one of: ' + ALLOWED_PLANS.join(', ') });
     }
-    // NOTE: this only records selection/intent. It does NOT grant paid entitlements.
+    if (UNLIMITED_PLAN_IDS.includes(plan)) {
+      return res.status(402).json({ error: 'Paid plans are bought through checkout.', code: 'checkout_required' });
+    }
+    const rider = getRiderById(req.riderId);
+    if (!rider) return res.status(404).json({ error: 'Account not found' });
+    // Never downgrade a paid plan from here.
+    if (rider.plan && !['free', 'per_event'].includes(rider.plan)) {
+      return res.json({ success: true, plan: rider.plan, rider: sanitize(rider) });
+    }
     const updated = updateRider(req.riderId, { plan });
     res.json({ success: true, plan, rider: sanitize(updated) });
   } catch (err) { console.error(err); res.status(500).json({ error: 'Could not save plan' }); }
