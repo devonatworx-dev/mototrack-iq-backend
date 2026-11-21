@@ -31,6 +31,10 @@ const dataDir = path.join(__dirname, 'data');
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 
 const app = express();
+// Railway terminates TLS and forwards X-Forwarded-Proto. OAuth redirect_uri
+// must be https in production or the provider rejects it. One hop matches
+// Railway's proxy so req.ip (auth rate limits) is the rider, not the proxy.
+app.set('trust proxy', 1);
 app.use(cors({ origin: true, credentials: true }));
 
 // LemonSqueezy webhook needs the RAW body for HMAC signature verification, so it
