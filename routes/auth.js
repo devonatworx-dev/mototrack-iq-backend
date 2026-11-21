@@ -6,6 +6,9 @@ import { createRider, getRiderByEmail, getRiderById, getRiderByVerifyToken, upda
 import { sendVerifyEmail, sendPasswordResetEmail, sendWelcomeEmail } from '../lib/email.js';
 import { requireAuth } from '../lib/middleware/auth.js';
 import config from '../lib/config.js';
+import oauthRoutes from './oauth.js';
+import { requireTurnstile } from '../lib/turnstile.js';
+import { authRateLimit } from '../lib/rate-limit.js';
 
 const router = express.Router();
 // Required secret, no fallback (see lib/config.js for why).
@@ -29,7 +32,9 @@ function normEmail(e) { return String(e || '').trim().toLowerCase(); }
 // ── Register (verification-first) ────────────────────────────────────────────
 // Creates a PENDING rider (no password yet), sends a verification email.
 // No JWT is returned — the account is not usable until email is confirmed.
-router.post('/register', async (req, res) => {
+// Signup does not consult beta_signups. The waitlist stays in place for
+// people already on it; it is not a gate for a new account.
+router.post('/register', authRateLimit('register'), requireTurnstile, async (req, res) => {
   try {
     const { firstName, lastName, phone, experience, riderType, bikes, primaryTrack, lapTimer, ontarioResident } = req.body;
     const email = normEmail(req.body.email);
@@ -123,7 +128,7 @@ router.post('/set-password', (req, res) => {
 });
 
 // ── Resend verification ──────────────────────────────────────────────────────
-router.post('/resend-verification', async (req, res) => {
+router.post('/resend-verification', authRateLimit('resend-verification'), requireTurnstile, async (req, res) => {
   try {
     const email = normEmail(req.body.email);
     if (!email) return res.status(400).json({ error: 'email is required' });
@@ -138,7 +143,7 @@ router.post('/resend-verification', async (req, res) => {
   } catch (err) { console.error(err); res.status(500).json({ error: 'Request failed' }); }
 });
 
-router.post('/login', (req, res) => {
+router.post('/login', authRateLimit('login'), requireTurnstile, (req, res) => {
   try {
     const email = normEmail(req.body.email);
     const { password } = req.body;
@@ -196,7 +201,7 @@ function generateResetToken() {
   return token;
 }
 
-router.post('/forgot-password', (req, res) => {
+router.post('/forgot-password', authRateLimit('forgot-password'), requireTurnstile, (req, res) => {
   try {
     const { email } = req.body;
     if (!email) return res.status(400).json({ error: 'email is required' });
@@ -252,10 +257,15 @@ router.post('/change-password', requireAuth, (req, res) => {
     if (!currentPassword || !newPassword) return res.status(400).json({ error: 'Both passwords required' });
     const rider = getRiderById(req.riderId);
     if (!rider) return res.status(404).json({ error: 'Not found' });
+    if (!rider.passwordHash) {
+      return res.status(400).json({ error: 'This account signs in with Google or Microsoft. Use Forgot password if you also want a password.' });
+    }
     if (!bcrypt.compareSync(currentPassword, rider.passwordHash)) return res.status(401).json({ error: 'Current password wrong' });
     updateRider(req.riderId, { passwordHash: bcrypt.hashSync(newPassword, 10) });
     res.json({ success: true });
   } catch (err) { console.error(err); res.status(500).json({ error: 'Change failed' }); }
 });
+
+router.use('/oauth', oauthRoutes);
 
 export default router;
