@@ -168,11 +168,42 @@ router.get('/me', requireAuth, (req, res) => {
   res.json({ rider: sanitize(rider) });
 });
 
+// Fields a rider may change about themselves. Only keys actually present in the
+// request body are written, so a partial update (for example just a name
+// change) never blanks the other columns.
+const PROFILE_FIELDS = ['firstName', 'lastName', 'phone', 'experience', 'riderType', 'bikes', 'primaryTrack', 'lapTimer', 'notes'];
+const PROFILE_MAX_LEN = { firstName: 60, lastName: 60, phone: 40, experience: 40, riderType: 40, bikes: 500, primaryTrack: 120, lapTimer: 120, notes: 2000 };
+
+export function pickProfileUpdates(body) {
+  const updates = {};
+  const src = body && typeof body === 'object' ? body : {};
+  for (const key of PROFILE_FIELDS) {
+    if (!Object.prototype.hasOwnProperty.call(src, key) || src[key] === undefined) continue;
+    const raw = src[key];
+    if (raw === null) {
+      if (key === 'firstName' || key === 'lastName') return { error: `${key} cannot be empty` };
+      updates[key] = null;
+      continue;
+    }
+    if (typeof raw !== 'string' && typeof raw !== 'number') return { error: `${key} must be text` };
+    const val = String(raw).trim();
+    if (val.length > PROFILE_MAX_LEN[key]) return { error: `${key} is too long` };
+    if (key === 'firstName' && !val) return { error: 'First name cannot be empty' };
+    // lastName may be blank (the riders column is NOT NULL, so store '').
+    updates[key] = key === 'lastName' ? val : (val || null);
+  }
+  return { updates };
+}
+
 router.put('/profile', requireAuth, (req, res) => {
   try {
-    const { firstName, lastName, phone, experience, riderType, bikes, primaryTrack, lapTimer, notes } = req.body;
-    const updated = updateRider(req.riderId, { firstName, lastName, phone, experience, riderType, bikes, primaryTrack, lapTimer, notes });
-    res.json({ rider: sanitize(updated) });
+    const { updates, error } = pickProfileUpdates(req.body);
+    if (error) return res.status(400).json({ error });
+    const rider = getRiderById(req.riderId);
+    if (!rider) return res.status(404).json({ error: 'Account not found' });
+    if (!Object.keys(updates).length) return res.status(400).json({ error: 'Nothing to update' });
+    const updated = updateRider(req.riderId, updates);
+    res.json({ success: true, rider: sanitize(updated) });
   } catch (err) { console.error(err); res.status(500).json({ error: 'Update failed' }); }
 });
 
