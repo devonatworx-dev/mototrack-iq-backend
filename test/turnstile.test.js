@@ -30,6 +30,9 @@ process.env.TURNSTILE_SITE_KEY = PASS_SITE_KEY;
 process.env.TURNSTILE_SECRET_KEY = '';
 process.env.AUTH_RATE_LIMIT_MAX = '3';
 process.env.AUTH_RATE_LIMIT_WINDOW_MS = '60000';
+// This file checks the per-IP cap. The per-address mail cooldown is covered separately.
+process.env.AUTH_EMAIL_COOLDOWN_MS = '0';
+process.env.AUTH_EMAIL_MAX = '20';
 
 const require = createRequire(path.join(root, 'package.json'));
 const express = require('express');

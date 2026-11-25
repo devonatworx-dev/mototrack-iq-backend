@@ -370,61 +370,7 @@ app.post('/api/sessions/:id/report', async (req, res) => {
   }
 });
 
-/**
- * POST /api/device/upload — BLE Sync upload.
- * Must forward the file as multipart, so it is handled explicitly rather than
- * by the generic proxy (which can only carry JSON).
- */
-app.post('/api/device/upload', upload.single('file'), async (req, res) => {
-  try {
-    const token = bearerFrom(req);
-    const fd = new FormData();
-    if (req.file) {
-      fd.append('file', new Blob([req.file.buffer], { type: req.file.mimetype || 'text/csv' }), req.file.originalname || 'session.csv');
-    }
-    for (const [k, v] of Object.entries(req.body || {})) {
-      if (typeof v === 'string') fd.append(k, v);
-    }
-    const headers = {};
-    if (token) headers.Authorization = 'Bearer ' + token;
-    const upstream = await fetch(`${PROD}/api/device/upload`, { method: 'POST', headers, body: fd });
-    const ct = upstream.headers.get('content-type') || '';
-    if (ct.includes('application/json')) {
-      return res.status(upstream.status).json(await upstream.json());
-    }
-    const buf = Buffer.from(await upstream.arrayBuffer());
-    res.status(upstream.status);
-    res.setHeader('Content-Type', ct || 'application/octet-stream');
-    res.send(buf);
-  } catch (err) {
-    console.error('[facade] device/upload failed:', err);
-    res.status(502).json({ error: 'Upstream unreachable', detail: err.message });
-  }
-});
-
 // ── Everything else → proxy straight to production ──────────────────────────
-// ── Beta waitlist endpoints ───────────────────────────────────────────────────
-// Production still runs the JUNE build, which has ONLY /api/beta-signup and
-// /api/beta/count. The portal's double-opt-in flow also calls
-// /api/beta/confirm and /api/beta/resend, which 404 there — and Express
-// answers an unknown route with an HTML page, so the portal's `r.json()`
-// throws and the user sees the misleading "Cannot reach server".
-//
-// Until the current build is deployed, answer these with clean JSON so the
-// portal can say what is actually true instead of blaming the network.
-app.post('/api/beta/confirm', (_req, res) => {
-  res.status(501).json({
-    error: 'Confirmation is not available on this server build yet.',
-    code: 'not_supported'
-  });
-});
-app.post('/api/beta/resend', (_req, res) => {
-  res.status(501).json({
-    error: 'Resend is not available on this server build yet.',
-    code: 'not_supported'
-  });
-});
-
 app.use('/api', async (req, res) => {
   try {
     const token = bearerFrom(req);

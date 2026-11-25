@@ -1,28 +1,16 @@
 import express from 'express';
 import PDFDocument from 'pdfkit';
 import { getSessionById } from '../lib/db.js';
-import { verifyReportToken, signReportUrl } from '../lib/reportLink.js';
+import { verifyReportToken } from '../lib/reportLink.js';
 
 const router = express.Router();
 
-// GET /api/device/sessions/:id/report-link — mint a short-lived (24h) signed URL
-// for the trackside/device pages (eod.html, dashboard.html), which run WITHOUT a
-// rider login (matching the existing anonymous /api/device/upload + /eod flow).
-//
-// This does NOT make reports more exposed than the pre-fix state: the bare report
-// route is now closed to unsigned requests, and every minted token is bound to ONE
-// session id and expires on its own. A caller must still know the exact session id
-// (returned by the device upload/eod endpoints for that trackside session).
-router.get('/sessions/:id/report-link', (req, res) => {
-  try {
-    const session = getSessionById(req.params.id);
-    if (!session) return res.status(404).json({ error: 'Session not found' });
-    res.json({ url: signReportUrl(session.id) });
-  } catch (err) {
-    console.error('[device report-link]', err.message);
-    res.status(500).json({ error: 'Failed to mint report link' });
-  }
-});
+// Browser download for a report that was already generated.
+// The rider portal mints the URL from GET /api/sessions/:id/report-link
+// (rider JWT plus session ownership). The admin panel mints it from
+// GET /api/admin/sessions/:id/report-link (admin key). The browser then
+// opens this URL with no Authorization header, so the signed token is the
+// credential. Pit-wall list, end-of-day, and BLE upload routes are not mounted.
 
 // GET /api/device/sessions/:id/report?token=<signed> — stream PDF.
 // Browser navigation can't send auth headers, so this route is protected by a

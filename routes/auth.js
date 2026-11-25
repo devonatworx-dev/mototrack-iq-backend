@@ -8,7 +8,8 @@ import { requireAuth } from '../lib/middleware/auth.js';
 import config from '../lib/config.js';
 import oauthRoutes from './oauth.js';
 import { requireTurnstile } from '../lib/turnstile.js';
-import { authRateLimit } from '../lib/rate-limit.js';
+import { authRateLimit, emailSendLimit } from '../lib/rate-limit.js';
+import { validateRiderName } from '../lib/rider-name.js';
 
 const router = express.Router();
 // Required secret, no fallback (see lib/config.js for why).
@@ -34,11 +35,19 @@ function normEmail(e) { return String(e || '').trim().toLowerCase(); }
 // No JWT is returned — the account is not usable until email is confirmed.
 // Signup does not consult beta_signups. The waitlist stays in place for
 // people already on it; it is not a gate for a new account.
-router.post('/register', authRateLimit('register'), requireTurnstile, async (req, res) => {
+const REGISTER_OK = { success: true, pending: true, message: 'Check your email to confirm your account.' };
+
+router.post('/register', authRateLimit('register'), emailSendLimit('register'), requireTurnstile, async (req, res) => {
   try {
     const { firstName, lastName, phone, experience, riderType, bikes, primaryTrack, lapTimer, ontarioResident } = req.body;
     const email = normEmail(req.body.email);
     if (!firstName || !lastName || !email) return res.status(400).json({ error: 'firstName, lastName, and email are required' });
+    const firstError = validateRiderName(firstName, { required: true, label: 'First name' });
+    if (firstError) return res.status(400).json({ error: firstError });
+    const lastError = validateRiderName(lastName, { required: true, label: 'Last name' });
+    if (lastError) return res.status(400).json({ error: lastError });
+    const safeFirst = String(firstName).trim();
+    const safeLast = String(lastName).trim();
     // Territory safeguard: MotoTrackIQ (Ontario sole proprietorship) currently
     // serves Ontario residents only. Require an explicit attestation at signup.
     if (!ontarioResident) return res.status(400).json({ error: 'MotoTrackIQ is currently available only to residents of Ontario, Canada. Please confirm Ontario residency to continue.' });
@@ -46,27 +55,29 @@ router.post('/register', authRateLimit('register'), requireTurnstile, async (req
 
     const existing = getRiderByEmail(email);
     if (existing) {
-      // Already fully registered → tell them to sign in.
+      // Same body as a new signup. A completed account gets no mail, so the
+      // response does not reveal that the address is already registered.
       if (existing.verified && existing.passwordHash) {
-        return res.status(409).json({ error: 'Email already registered. Please sign in.' });
+        return res.status(200).json(REGISTER_OK);
       }
       // Pending → re-issue a fresh verification token/email (idempotent resend).
       const verifyToken = uuidv4();
       updateRider(existing.id, { verifyToken, verifyTokenExpiry: new Date(Date.now() + VERIFY_TTL_MS).toISOString() });
       await sendVerifyEmail(email, existing.firstName, verifyToken, email);
-      return res.status(200).json({ success: true, pending: true, message: 'Verification email re-sent. Please check your inbox.' });
+      return res.status(200).json(REGISTER_OK);
     }
 
     const verifyToken = uuidv4();
     createRider({
-      id: uuidv4(), firstName, lastName, email, phone: phone || null,
+      id: uuidv4(), firstName: safeFirst, lastName: safeLast, email, phone: phone || null,
       passwordHash: null, experience: experience || null, riderType: riderType || null,
       bikes: bikes || null, primaryTrack: primaryTrack || null, lapTimer: lapTimer || null, notes: null,
       verifyToken, verifyTokenExpiry: new Date(Date.now() + VERIFY_TTL_MS).toISOString(),
       ontarioAttestedAt
     });
-    await sendVerifyEmail(email, firstName, verifyToken, email);
-    res.status(201).json({ success: true, pending: true, message: 'Check your email to confirm your account.' });
+    await sendVerifyEmail(email, safeFirst, verifyToken, email);
+    // 200, same body as an existing address, so the status is not an oracle.
+    res.status(200).json(REGISTER_OK);
   } catch (err) { console.error(err); res.status(500).json({ error: 'Registration failed' }); }
 });
 
@@ -128,7 +139,7 @@ router.post('/set-password', (req, res) => {
 });
 
 // ── Resend verification ──────────────────────────────────────────────────────
-router.post('/resend-verification', authRateLimit('resend-verification'), requireTurnstile, async (req, res) => {
+router.post('/resend-verification', authRateLimit('resend-verification'), emailSendLimit('resend-verification'), requireTurnstile, async (req, res) => {
   try {
     const email = normEmail(req.body.email);
     if (!email) return res.status(400).json({ error: 'email is required' });
@@ -188,6 +199,13 @@ export function pickProfileUpdates(body) {
     if (typeof raw !== 'string' && typeof raw !== 'number') return { error: `${key} must be text` };
     const val = String(raw).trim();
     if (val.length > PROFILE_MAX_LEN[key]) return { error: `${key} is too long` };
+    if (key === 'firstName' || key === 'lastName') {
+      const nameError = validateRiderName(val, {
+        required: key === 'firstName',
+        label: key === 'firstName' ? 'First name' : 'Last name',
+      });
+      if (nameError) return { error: nameError };
+    }
     if (key === 'firstName' && !val) return { error: 'First name cannot be empty' };
     // lastName may be blank (the riders column is NOT NULL, so store '').
     updates[key] = key === 'lastName' ? val : (val || null);
@@ -244,7 +262,7 @@ function generateResetToken() {
   return token;
 }
 
-router.post('/forgot-password', authRateLimit('forgot-password'), requireTurnstile, (req, res) => {
+router.post('/forgot-password', authRateLimit('forgot-password'), emailSendLimit('forgot-password'), requireTurnstile, (req, res) => {
   try {
     const { email } = req.body;
     if (!email) return res.status(400).json({ error: 'email is required' });
