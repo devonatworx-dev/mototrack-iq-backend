@@ -4,7 +4,8 @@ import cors from 'cors';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath, pathToFileURL } from 'url';
-import { cleanExpiredSessions, migrateLegacyBetaSignups, initDb, getEntitlement, consumeReportCredit, addReportCredits } from './lib/db.js';
+import { cleanExpiredSessions, migrateLegacyBetaSignups, initDb, getEntitlement, consumeReportCredit, addReportCredits, getDbFilePath } from './lib/db.js';
+import { createBackup, startDailyBackups, resolveBackupDir, backupRetention } from './lib/backup.js';
 import { analyzeCSV } from './lib/analyzer.js';
 import { generateReport } from './lib/reportGenerator.js';
 import { sendReportEmail } from './lib/email.js';
@@ -202,7 +203,8 @@ app.get('*', (req, res) => {
 
 async function start() {
   await initDb();
-  console.log('Database initialized');
+  console.log(`Database initialized (${getDbFilePath()})`);
+  console.log(`Database backups: ${resolveBackupDir()} (keep ${backupRetention()})`);
 
   try {
     const result = await migrateLegacyBetaSignups(path.join(__dirname, '..', 'mototrack-iq-backend', 'data', 'beta-signups.json'));
@@ -210,6 +212,11 @@ async function start() {
   } catch (e) { /* skip */ }
 
   cleanExpiredSessions();
+
+  // Best-effort copy of the live database. A failed backup must not stop
+  // the process, and this path never copies a backup back over DB_PATH.
+  createBackup().catch(() => {});
+  startDailyBackups();
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server ready on port ${PORT}`);
