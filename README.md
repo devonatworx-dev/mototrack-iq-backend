@@ -66,6 +66,8 @@ pm2 logs mototrackiq-backend-v2
 |---|---|---|
 | GET | `/api/admin/riders` | List all riders (auth required) |
 | GET | `/api/admin/analytics` | Platform analytics (auth required) |
+| GET | `/api/admin/backups` | List backup file names, sizes, and times (admin key). No file contents. |
+| POST | `/api/admin/backups` | Write and verify one backup now (admin key). No file contents in the response. |
 
 ### Health
 | Method | Endpoint | Description |
@@ -76,12 +78,41 @@ pm2 logs mototrackiq-backend-v2
 
 ## Database
 
-**Location:** `/home/assistant/.openclaw/workspace/mototrack-iq-backend-v2/database.sqlite`
+The live database is one SQLite file, held in memory with `sql.js` and written through after each change.
 
-**Schema:**
-- `riders` — id, email, name, password_hash, created_at
-- `sessions` — id, rider_id, date, track, laps_count, top_speed, best_lap, file_name, status
-- `beta_signups` — id, email, name, created_at
+**Live file:** `DB_PATH`, or `data/mototrackiq.db` inside this repo when `DB_PATH` is unset. On Railway, `DB_PATH` is a file on the volume mounted at `/data`.
+
+**Saves:** each change writes a temp file in the same directory as `DB_PATH`, fsyncs it, and renames it over the live file. The live file is not written in place. A crash during a save leaves the previous file as it was. Leftover `*.tmp` files next to the database are incomplete saves. Leave them out of a restore.
+
+**Backups:** on startup, once a day after that, and when an admin calls `POST /api/admin/backups`, the process copies the live file to `/data/backups/` (override with `BACKUP_DIR`). Names look like `mototrackiq-20261125T041030123Z.db`. Each copy is opened with `sql.js` and checked with `PRAGMA integrity_check` before it counts. A copy that fails that check is deleted. After a good copy, the process keeps the newest `BACKUP_RETENTION` backups (default 14) and deletes older files that match that name pattern. Anything else in the directory stays.
+
+`GET /api/admin/backups` and `POST /api/admin/backups` require the admin key (`X-Admin-Key` or `Authorization: Bearer`). Both return the backup name, size in bytes, and modification time. They do not return database bytes. There is no download route.
+
+The server opens `DB_PATH` only. It does not copy a file from the backup directory onto the live database at startup or on a timer.
+
+### Restore a backup by hand
+
+Do this yourself, with the process stopped. The running server keeps the database in memory and will overwrite `DB_PATH` from that memory on the next save, so replacing the file while the process is up does not restore anything.
+
+1. In the Railway service variables, read `DB_PATH`. It needs to be a path on the volume, under `/data`. Read `BACKUP_DIR` too if it is set; otherwise backups are in `/data/backups`.
+2. `GET /api/admin/backups` with the admin key and choose a name from that list. Or list `/data/backups` on the volume. Prefer a file the service wrote (the timestamped `mototrackiq-*.db` names). Do not restore a `*.tmp` file.
+3. Stop the `mototrack-iq-backend` service so nothing is writing. Starting it again uses the same one replica. This procedure does not change the replica count, the builder, or any variable.
+4. On the volume, keep the current live file, then replace it with the backup using a rename in the live file's directory (same filesystem as the volume):
+
+```bash
+# Set these from the Railway variables. Example live path shown.
+DB_PATH=/data/mototrackiq.db
+BACKUP=/data/backups/mototrackiq-20261125T041030123Z.db
+
+cp -a "$DB_PATH" "${DB_PATH}.before-restore"
+cp -a "$BACKUP" "${DB_PATH}.restore"
+mv -f "${DB_PATH}.restore" "$DB_PATH"
+```
+
+5. Start the service. On boot it loads `$DB_PATH` and leaves `/data/backups` as it is. It also writes a new startup backup of whatever it just loaded.
+6. Check `GET /health` and a rider or session you expect to see in that backup. If the backup was the wrong one, stop the service again and repeat the rename using `${DB_PATH}.before-restore` or a different file in `/data/backups`.
+
+There is no automatic restore. A bad or missing live file does not cause the process to pick an older backup.
 
 ---
 
@@ -113,8 +144,11 @@ The backend sends emails via the Gmail API using OAuth2 refresh tokens.
 | `AUTH_EMAIL_MAX` | Per-mailbox cap for register, resend, and forgot-password. Default `5`, clamped to 1–20. |
 | `AUTH_EMAIL_WINDOW_MS` | Per-mailbox window. Default `3600000` (1 hour). |
 | `AUTH_EMAIL_COOLDOWN_MS` | Minimum gap between mail to the same address. Default `60000`. `0` turns off only the gap. |
+| `DB_PATH` | Live SQLite file. Default `data/mototrackiq.db`. On Railway this is a file on the `/data` volume. |
+| `BACKUP_DIR` | Backup directory. Default `/data/backups`. Optional. |
+| `BACKUP_RETENTION` | How many verified backups to keep. Default `14`. Optional. Any value that is not a positive integer uses `14`. |
 
-None of the `AUTH_*` variables are required. The server boots with the defaults. There is no device-ingest token.
+None of the `AUTH_*` variables are required. The server boots with the defaults. There is no device-ingest token. `BACKUP_DIR` and `BACKUP_RETENTION` are optional; leave them unset in production unless you want a different directory or a different keep-count.
 
 ---
 
@@ -143,6 +177,8 @@ pm2 status                              # Check all services
 **Database locked:**
 - sql.js uses in-memory SQLite; no external locking issues
 - If stuck, restart the PM2 process
+
+**Need an older copy of the database:** follow "Restore a backup by hand" above. Stop the service first. The process will not roll back to a backup by itself.
 
 ---
 
