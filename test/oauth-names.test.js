@@ -10,6 +10,30 @@ test('given/family preferred over name', () => {
   const p = profileFromProvider('google', { sub: 'x', email: 'a@b.com', email_verified: true, given_name: 'A', family_name: 'B', name: 'Z Y' });
   assert.equal(p.firstName, 'A'); assert.equal(p.lastName, 'B');
 });
+test('markup and control characters are stripped and the length is capped', () => {
+  const p = profileFromProvider('google', {
+    sub: 'x',
+    email: 'a@b.com',
+    email_verified: true,
+    given_name: '<script>alert(1)</script>Devon',
+    family_name: 'Smith\nJr<img src=x onerror=alert(1)>',
+  });
+  assert.equal(p.firstName, 'Devon');
+  assert.equal(p.lastName, 'Smith Jr');
+  assert.equal(p.firstName.includes('<'), false);
+  assert.equal(p.lastName.includes('<'), false);
+
+  const long = profileFromProvider('microsoft', {
+    sub: 'y',
+    email: 'a@b.com',
+    email_verified: true,
+    name: `${'A'.repeat(80)} ${'B'.repeat(80)}`,
+  });
+  assert.ok(long.firstName.length <= 60);
+  assert.ok(long.lastName.length <= 60);
+  assert.equal(long.firstName.includes('<'), false);
+});
+
 test('email-like name is ignored', () => {
   const p = profileFromProvider('microsoft', { sub: 'x', email: 'a@b.com', email_verified: true, name: 'a@b.com' });
   assert.equal(p.firstName, '');

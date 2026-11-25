@@ -89,7 +89,7 @@ test('updating one other field does not touch the name', async () => {
 
 test('blank first name, null name, wrong types and empty bodies are rejected without writing', async () => {
   const token = seedRider('r-bad', 'bad@example.com');
-  for (const body of [{ firstName: '   ' }, { firstName: null }, { lastName: null }, { firstName: { x: 1 } }, { firstName: 'a'.repeat(61) }, {}, { passwordHash: 'hijack', plan: 'pro' }]) {
+  for (const body of [{ firstName: '   ' }, { firstName: null }, { lastName: null }, { firstName: { x: 1 } }, { firstName: 'a'.repeat(61) }, { firstName: 'Ada<script>' }, { lastName: 'Rider\u0000' }, {}, { passwordHash: 'hijack', plan: 'pro' }]) {
     const res = await put(token, body);
     assert.equal(res.status, 400, JSON.stringify(body));
   }

@@ -1,19 +1,126 @@
 import express from 'express';
+import crypto from 'crypto';
+import multer from 'multer';
 import PDFDocument from 'pdfkit';
-import { getSessionById } from '../lib/db.js';
+import { analyzeCSV } from '../lib/analyzer.js';
+import { createSession, getAllSessions, getDeviceSessions, getSessionById } from '../lib/db.js';
+import { requireUserOrDevice } from '../lib/middleware/auth.js';
+import { cleanRiderName } from '../lib/rider-name.js';
 import { verifyReportToken, signReportUrl } from '../lib/reportLink.js';
 
 const router = express.Router();
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 
-// GET /api/device/sessions/:id/report-link — mint a short-lived (24h) signed URL
-// for the trackside/device pages (eod.html, dashboard.html), which run WITHOUT a
-// rider login (matching the existing anonymous /api/device/upload + /eod flow).
-//
-// This does NOT make reports more exposed than the pre-fix state: the bare report
-// route is now closed to unsigned requests, and every minted token is bound to ONE
-// session id and expires on its own. A caller must still know the exact session id
-// (returned by the device upload/eod endpoints for that trackside session).
-router.get('/sessions/:id/report-link', (req, res) => {
+function withoutCsv(session) {
+  if (!session || typeof session !== 'object') return session;
+  const { csvContent, ...rest } = session;
+  return rest;
+}
+
+function textField(value, max, fallback = '') {
+  return cleanRiderName(value, { fallback, max });
+}
+
+// GET /api/device/sessions/today and /api/device/eod — trackside dashboards.
+// Callers must send a rider JWT, the admin key, or X-Device-Token.
+router.get('/sessions/today', requireUserOrDevice, (req, res) => {
+  try {
+    const today = new Date().toISOString().split('T')[0];
+    const sessions = getDeviceSessions({ date: today }).map(withoutCsv);
+    res.json({ date: today, sessions, count: sessions.length });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+router.get('/sessions', requireUserOrDevice, (req, res) => {
+  try {
+    const { date } = req.query;
+    const sessions = getDeviceSessions({ date }).map(withoutCsv);
+    res.json({ sessions });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+router.get('/eod', requireUserOrDevice, (req, res) => {
+  try {
+    const date = req.query.date || new Date().toISOString().split('T')[0];
+    if (typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      return res.status(400).json({ error: 'date must be YYYY-MM-DD' });
+    }
+    const sessions = getAllSessions({ date });
+    const summary = {
+      date,
+      totalSessions: sessions.length,
+      devices: [...new Set(sessions.map(s => s.deviceName).filter(Boolean))],
+      riders: [...new Set(sessions.map(s => s.riderName).filter(Boolean))],
+      sessions: sessions.map(s => ({
+        id: s.id,
+        name: s.name,
+        deviceName: s.deviceName,
+        riderName: s.riderName,
+        slotId: s.slotId,
+        track: s.track,
+        bike: s.bike,
+        lapCount: s.analysisData?.laps?.length || s.analysisData?.lapCount || 0,
+        bestLap: s.analysisData?.summary?.bestLap || s.analysisData?.bestLap || null,
+        createdAt: s.createdAt,
+      }))
+    };
+    res.json(summary);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+router.get('/sessions/:id', requireUserOrDevice, (req, res) => {
+  try {
+    const session = getSessionById(req.params.id);
+    if (!session) return res.status(404).json({ error: 'Not found' });
+    res.json({ session: withoutCsv(session) });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// BLE sync upload. Same auth as ingest. A rider JWT is stored on the session;
+// a device token leaves riderId empty so the trackside dashboard still lists it.
+router.post('/upload', requireUserOrDevice, upload.single('file'), (req, res) => {
+  try {
+    const csv = req.file ? req.file.buffer.toString('utf-8') : req.body.csv;
+    if (!csv || typeof csv !== 'string') return res.status(400).json({ error: 'No CSV provided' });
+    if (Buffer.byteLength(csv) > 50 * 1024 * 1024) return res.status(413).json({ error: 'Upload is too large' });
+
+    const deviceName = textField(req.body.deviceName || req.body.device, 80, `Device-${Date.now()}`);
+    const riderName  = cleanRiderName(req.body.riderName || req.body.rider, { fallback: 'Unknown Rider' });
+    const slotId     = req.body.slotId || req.body.slot || null;
+    const bike       = textField(req.body.bike, 80) || null;
+    const track      = textField(req.body.track, 80) || null;
+
+    const analysis = analyzeCSV(csv);
+    const id = crypto.randomUUID();
+    const date = new Date().toISOString().split('T')[0];
+    const name = `${riderName} — ${deviceName} — ${date}`;
+
+    createSession({
+      id,
+      riderId: req.riderId || null,
+      deviceName,
+      riderName,
+      slotId,
+      name,
+      track: track || analysis?.summary?.trackName || null,
+      bike,
+      date,
+      csvContent: csv,
+      analysisData: analysis,
+    });
+
+    return res.json({ success: true, sessionId: id, session: { id, name, deviceName, riderName, slotId, date }, analysis });
+  } catch (err) {
+    if (err?.code === 'LIMIT_FILE_SIZE') return res.status(413).json({ error: 'Upload is too large' });
+    console.error('[device/upload]', err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/device/sessions/:id/report-link — mint a short-lived (24h) signed URL.
+// The trackside pages must send the same auth as /eod. The PDF URL itself stays
+// token-protected so the browser can open it without an Authorization header.
+router.get('/sessions/:id/report-link', requireUserOrDevice, (req, res) => {
   try {
     const session = getSessionById(req.params.id);
     if (!session) return res.status(404).json({ error: 'Session not found' });
@@ -240,6 +347,13 @@ router.get('/sessions/:id/report', (req, res) => {
     console.error('[device-report]', err);
     res.status(500).json({ error: err.message });
   }
+});
+
+router.use((err, req, res, next) => {
+  if (err?.code === 'LIMIT_FILE_SIZE' || err?.type === 'entity.too.large' || err?.status === 413) {
+    return res.status(413).json({ error: 'Upload is too large' });
+  }
+  return next(err);
 });
 
 export default router;

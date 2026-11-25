@@ -3,26 +3,22 @@ import express from 'express';
 import cors from 'cors';
 import path from 'path';
 import fs from 'fs';
-import { fileURLToPath } from 'url';
-import crypto from 'crypto';
-import { cleanExpiredSessions, migrateLegacyBetaSignups, initDb, createSession, getDeviceSessions, getAllSessions, getSessionById, getEntitlement, consumeReportCredit, addReportCredits } from './lib/db.js';
+import { fileURLToPath, pathToFileURL } from 'url';
+import { cleanExpiredSessions, migrateLegacyBetaSignups, initDb, getEntitlement, consumeReportCredit, addReportCredits } from './lib/db.js';
 import { analyzeCSV } from './lib/analyzer.js';
 import { generateReport } from './lib/reportGenerator.js';
 import { sendReportEmail } from './lib/email.js';
 import multer from 'multer';
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
-import jwt from 'jsonwebtoken';
 import authRoutes from './routes/auth.js';
 import sessionsRoutes from './routes/sessions.js';
 import ingestRoutes from './routes/ingest.js';
-import { signupHandler, confirmHandler, countHandler, resendHandler } from './routes/beta.js';
 import adminRoutes from './routes/admin.js';
 import deviceReportsRoutes from './routes/device-reports.js';
 import promoRoutes from './routes/promo.js';
 import feedbackRoutes from './routes/feedback.js';
 import checkoutRoutes from './routes/checkout.js';
 import { requireAuth } from './lib/middleware/auth.js';
-import config from './lib/config.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = parseInt(process.env.PORT || '3009', 10);
@@ -32,8 +28,10 @@ if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 
 const app = express();
 // Railway terminates TLS and forwards X-Forwarded-Proto. OAuth redirect_uri
-// must be https in production or the provider rejects it. One hop matches
-// Railway's proxy so req.ip (auth rate limits) is the rider, not the proxy.
+// must be https in production or the provider rejects it. Hop count is not
+// stable, so req.ip is often the edge address. Auth rate limits key on
+// X-Real-IP instead (see lib/rate-limit.js). trust proxy stays at 1 so
+// req.protocol follows X-Forwarded-Proto without trusting every hop.
 app.set('trust proxy', 1);
 app.use(cors({ origin: true, credentials: true }));
 
@@ -50,7 +48,7 @@ if (fs.existsSync(publicPath)) app.use(express.static(publicPath));
 app.get('/health', (req, res) => res.json({ status: 'ok', v: '2.0.0' }));
 
 app.use('/api/auth', authRoutes);
-app.use('/api/sessions/ingest', ingestRoutes);  // ESP32 bridge (no auth)
+app.use('/api/sessions/ingest', ingestRoutes);  // ESP32 bridge (JWT, admin key, or device token)
 app.use('/api/sessions', sessionsRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/device', deviceReportsRoutes);
@@ -58,7 +56,6 @@ app.use('/api/promo', promoRoutes);
 app.use('/api/feedback', feedbackRoutes);
 app.use('/api', checkoutRoutes);  // /api/checkout/:product (JSON body, auth)
 
-// Beta routes at correct paths
 // P0 (2026-07-06): these were open anonymous free-analysis routes (unlimited free
 // full analysis + PDF, no account). The live frontend uses the authed /api/sessions
 // flow and does NOT call these, so gating them behind requireAuth closes a free-tier
@@ -195,113 +192,6 @@ app.post('/api/report/email', requireAuth, upload.single('file'), async (req, re
   }
 });
 
-// ── Device upload (BLE Sync → DB, optional auth to link to rider account) ───
-// Required secret, no public fallback (see lib/config.js for why).
-const JWT_SECRET = config.jwtSecret;
-app.post('/api/device/upload', upload.single('file'), (req, res) => {
-  try {
-    const csv = req.file ? req.file.buffer.toString('utf-8') : req.body.csv;
-    if (!csv) return res.status(400).json({ error: 'No CSV provided' });
-
-    const deviceName = req.body.deviceName || req.body.device || `Device-${Date.now()}`;
-    const riderName  = req.body.riderName  || req.body.rider  || 'Unknown Rider';
-    const slotId     = req.body.slotId     || req.body.slot   || null;
-    const bike       = req.body.bike       || null;
-    const track      = req.body.track      || null;
-
-    // Optional: link to rider account if a valid token is provided
-    let riderId = null;
-    const authHeader = req.headers.authorization || '';
-    if (authHeader.startsWith('Bearer ')) {
-      try {
-        const decoded = jwt.verify(authHeader.slice(7), JWT_SECRET);
-        riderId = decoded.riderId || null;
-      } catch (_) { /* invalid token — upload anonymously */ }
-    }
-
-    const analysis = analyzeCSV(csv);
-    const id = crypto.randomUUID();
-    const date = new Date().toISOString().split('T')[0];
-    const name = `${riderName} — ${deviceName} — ${date}`;
-
-    const session = createSession({
-      id,
-      riderId,
-      deviceName,
-      riderName,
-      slotId,
-      name,
-      track: track || analysis?.summary?.trackName || null,
-      bike,
-      date,
-      csvContent: csv,
-      analysisData: analysis,
-    });
-
-    return res.json({ success: true, sessionId: id, session: { id, name, deviceName, riderName, slotId, date }, analysis });
-  } catch (err) {
-    console.error('[device/upload]', err);
-    return res.status(500).json({ error: err.message });
-  }
-});
-
-// ── Device dashboard API (no auth) ───────────────────────────────────────────
-app.get('/api/device/sessions', (req, res) => {
-  try {
-    const { date } = req.query;
-    const sessions = getDeviceSessions({ date });
-    res.json({ sessions });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-app.get('/api/device/sessions/today', (req, res) => {
-  try {
-    const today = new Date().toISOString().split('T')[0];
-    const sessions = getDeviceSessions({ date: today });
-    res.json({ date: today, sessions, count: sessions.length });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-app.get('/api/device/sessions/:id', (req, res) => {
-  try {
-    const session = getSessionById(req.params.id);
-    if (!session) return res.status(404).json({ error: 'Not found' });
-    res.json({ session });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-// End of day review — all sessions for a date
-app.get('/api/device/eod', (req, res) => {
-  try {
-    const date = req.query.date || new Date().toISOString().split('T')[0];
-    const sessions = getAllSessions({ date });
-    const summary = {
-      date,
-      totalSessions: sessions.length,
-      devices: [...new Set(sessions.map(s => s.deviceName).filter(Boolean))],
-      riders: [...new Set(sessions.map(s => s.riderName).filter(Boolean))],
-      sessions: sessions.map(s => ({
-        id: s.id,
-        name: s.name,
-        deviceName: s.deviceName,
-        riderName: s.riderName,
-        slotId: s.slotId,
-        track: s.track,
-        bike: s.bike,
-        lapCount: s.analysisData?.laps?.length || s.analysisData?.lapCount || 0,
-        bestLap: s.analysisData?.summary?.bestLap || s.analysisData?.bestLap || null,
-        createdAt: s.createdAt,
-      }))
-    };
-    res.json(summary);
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-app.post('/api/beta-signup', signupHandler);
-app.post('/api/beta/confirm', confirmHandler);
-app.post('/api/beta/resend', resendHandler);
-app.get('/api/beta/count', countHandler);
-
 app.get('*', (req, res) => {
   if (!req.path.startsWith('/api') && !req.path.startsWith('/health')) {
     const idx = path.join(publicPath, 'index.html');
@@ -328,4 +218,8 @@ async function start() {
   });
 }
 
-start();
+const invokedDirectly = process.argv[1]
+  && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
+if (invokedDirectly) start();
+
+export { app };
