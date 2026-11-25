@@ -19,9 +19,6 @@ process.env.AUTH_RATE_LIMIT_WINDOW_MS = '60000';
 process.env.AUTH_EMAIL_COOLDOWN_MS = '60000';
 process.env.AUTH_EMAIL_MAX = '5';
 process.env.AUTH_EMAIL_WINDOW_MS = '3600000';
-process.env.DEVICE_INGEST_TOKEN = 'device-test-token';
-process.env.INGEST_MAX_BATCH_BYTES = '1024';
-process.env.INGEST_MAX_SLOT_BYTES = '1024';
 process.env.GOOGLE_OAUTH_CLIENT_ID = 'poc-google-client.apps.googleusercontent.com';
 process.env.GOOGLE_OAUTH_CLIENT_SECRET = 'poc-google-secret';
 process.env.MICROSOFT_OAUTH_CLIENT_ID = '00000000-0000-0000-0000-000000000001';
@@ -30,11 +27,9 @@ process.env.FACEBOOK_OAUTH_ENABLED = 'false';
 
 const require = createRequire(path.join(root, 'package.json'));
 const express = require('express');
-const jwt = require('jsonwebtoken');
 
-const { initDb, createRider, createSession, updateRider } = await import('../lib/db.js');
+const { initDb, createRider, createSession, getSessionById, updateRider } = await import('../lib/db.js');
 const { default: authRoutes } = await import('../routes/auth.js');
-const { default: ingestRoutes } = await import('../routes/ingest.js');
 const { default: deviceRoutes } = await import('../routes/device-reports.js');
 const { resetRateLimits } = await import('../lib/rate-limit.js');
 
@@ -48,7 +43,6 @@ before(async () => {
   app.set('trust proxy', 1);
   app.use(express.json({ limit: '1mb' }));
   app.use('/api/auth', authRoutes);
-  app.use('/api/sessions/ingest', ingestRoutes);
   app.use('/api/device', deviceRoutes);
   server = app.listen(0, '127.0.0.1');
   await new Promise((resolve) => server.once('listening', resolve));
@@ -82,9 +76,13 @@ test('waitlist routes are gone and the signup table helpers remain', () => {
   assert.equal(serverSrc.includes('/api/admin/signups'), false);
   assert.equal(adminSrc.includes("'/signups'"), false);
   assert.equal(fs.existsSync(path.join(root, 'routes/beta.js')), false);
+  assert.equal(fs.existsSync(path.join(root, 'routes/ingest.js')), false);
+  assert.equal(serverSrc.includes('/api/sessions/ingest'), false);
+  assert.equal(serverSrc.includes('DEVICE_INGEST_TOKEN'), false);
   const dbSrc = fs.readFileSync(path.join(root, 'lib/db.js'), 'utf8');
   assert.match(dbSrc, /CREATE TABLE IF NOT EXISTS beta_signups/);
   assert.match(dbSrc, /export async function migrateLegacyBetaSignups/);
+  assert.match(dbSrc, /CREATE TABLE IF NOT EXISTS sessions/);
 });
 
 test('one IP is limited even when each request uses a different mailbox', async () => {
@@ -165,93 +163,34 @@ test('register stores a clean name and does not reveal an existing account', asy
   assert.equal(getRiderByEmail('xss@example.com'), null);
 });
 
-test('ingest and device reads require auth, cap size, and clean header names', async () => {
-  resetRateLimits();
-  const open = await fetch(base + '/api/sessions/ingest', {
-    method: 'POST',
-    headers: { 'content-type': 'text/csv', 'x-rider-name': '<script>x</script>Ada' },
-    body: '1,2,3\n',
-  });
-  assert.equal(open.status, 401);
-
-  const named = await fetch(base + '/api/sessions/ingest', {
-    method: 'POST',
-    headers: {
-      'content-type': 'text/csv',
-      'x-device-token': 'device-test-token',
-      'x-rider-name': '<script>alert(1)</script>Ada',
-      'x-device-slot': '2',
-    },
-    body: '1,2,3\n',
-  });
-  const namedBody = await named.json();
-  assert.equal(named.status, 200);
-  assert.equal(namedBody.riderName, 'Ada');
-  assert.equal(String(namedBody.riderName).includes('<'), false);
-
-  const bulky = await fetch(base + '/api/sessions/ingest', {
-    method: 'POST',
-    headers: { 'content-type': 'text/csv', 'x-device-token': 'device-test-token', 'x-device-slot': '3' },
-    body: `${'1,'.repeat(700)}\n`,
-  });
-  assert.equal(bulky.status, 413);
-
-  const row = `${'9,'.repeat(300)}\n`;
-  const firstFit = await fetch(base + '/api/sessions/ingest', {
-    method: 'POST',
-    headers: { 'content-type': 'text/csv', 'x-device-token': 'device-test-token', 'x-device-slot': '4' },
-    body: row,
-  });
-  assert.equal(firstFit.status, 200);
-  const overflow = await fetch(base + '/api/sessions/ingest', {
-    method: 'POST',
-    headers: { 'content-type': 'text/csv', 'x-device-token': 'device-test-token', 'x-device-slot': '4' },
-    body: row,
-  });
-  assert.equal(overflow.status, 413);
-
-  const badSlot = await fetch(base + '/api/sessions/ingest', {
-    method: 'POST',
-    headers: { 'content-type': 'text/csv', 'x-device-token': 'device-test-token', 'x-device-slot': '99' },
-    body: '1,2,3\n',
-  });
-  assert.equal(badSlot.status, 400);
-
-  const todayOpen = await fetch(base + '/api/device/sessions/today');
-  assert.equal(todayOpen.status, 401);
-  const eodOpen = await fetch(base + '/api/device/eod');
-  assert.equal(eodOpen.status, 401);
-  const uploadOpen = await post('/api/device/upload', { csv: '1,2\n', riderName: '<b>Ada</b>' });
-  assert.equal(uploadOpen.status, 401);
-
+test('pit-wall device routes are gone and an old bridge session stays readable', async () => {
   const today = new Date().toISOString().split('T')[0];
   createSession({
-    id: 'sess-1',
-    riderId: null,
-    deviceName: 'RaceBox',
+    id: 'bridge-old',
+    riderId: 'bridge-slot-1',
+    deviceName: 'ESP32',
     riderName: 'Ada',
     slotId: '1',
-    name: 'Ada session',
+    name: 'Ada — Shannonville (ESP32)',
     track: 'Shannonville',
     bike: 'R6',
     date: today,
     csvContent: 'secret-csv-payload',
-    analysisData: { laps: [{ time: 90 }] },
+    analysisData: { summary: { trackName: 'Shannonville' }, laps: [{ time: 90 }] },
   });
-  const token = jwt.sign({ riderId: 'rider-1' }, process.env.JWT_SECRET, { expiresIn: '1h' });
-  const todayAuthed = await fetch(base + '/api/device/sessions/today', {
-    headers: { authorization: `Bearer ${token}` },
-  });
-  const todayBody = await todayAuthed.json();
-  assert.equal(todayAuthed.status, 200);
-  assert.equal(JSON.stringify(todayBody).includes('secret-csv-payload'), false);
-  assert.ok(todayBody.sessions.some((s) => s.id === 'sess-1'));
+  const stored = getSessionById('bridge-old');
+  assert.equal(stored.riderName, 'Ada');
+  assert.equal(stored.csvContent, 'secret-csv-payload');
 
-  const eod = await fetch(base + '/api/device/eod', {
-    headers: { 'x-device-token': 'device-test-token' },
-  });
-  assert.equal(eod.status, 200);
-  const eodBody = await eod.json();
-  assert.equal(JSON.stringify(eodBody).includes('secret-csv-payload'), false);
-  assert.ok(eodBody.sessions.some((s) => s.riderName === 'Ada'));
+  for (const path of ['/api/device/sessions/today', '/api/device/eod', '/api/device/sessions', '/api/sessions/ingest']) {
+    const res = await fetch(base + path);
+    assert.equal(res.status, 404, path);
+  }
+  const upload = await post('/api/device/upload', { csv: '1,2\n', riderName: 'Ada' });
+  assert.equal(upload.status, 404);
+
+  const bare = await fetch(base + '/api/device/sessions/bridge-old/report');
+  assert.equal(bare.status, 403);
+  const body = await bare.json();
+  assert.equal(body.reason, 'missing');
 });

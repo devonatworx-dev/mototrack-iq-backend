@@ -12,7 +12,6 @@ import multer from 'multer';
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 import authRoutes from './routes/auth.js';
 import sessionsRoutes from './routes/sessions.js';
-import ingestRoutes from './routes/ingest.js';
 import adminRoutes from './routes/admin.js';
 import deviceReportsRoutes from './routes/device-reports.js';
 import promoRoutes from './routes/promo.js';
@@ -48,7 +47,6 @@ if (fs.existsSync(publicPath)) app.use(express.static(publicPath));
 app.get('/health', (req, res) => res.json({ status: 'ok', v: '2.0.0' }));
 
 app.use('/api/auth', authRoutes);
-app.use('/api/sessions/ingest', ingestRoutes);  // ESP32 bridge (JWT, admin key, or device token)
 app.use('/api/sessions', sessionsRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/device', deviceReportsRoutes);

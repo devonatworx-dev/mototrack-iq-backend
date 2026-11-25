@@ -370,38 +370,6 @@ app.post('/api/sessions/:id/report', async (req, res) => {
   }
 });
 
-/**
- * POST /api/device/upload — BLE Sync upload.
- * Must forward the file as multipart, so it is handled explicitly rather than
- * by the generic proxy (which can only carry JSON).
- */
-app.post('/api/device/upload', upload.single('file'), async (req, res) => {
-  try {
-    const token = bearerFrom(req);
-    const fd = new FormData();
-    if (req.file) {
-      fd.append('file', new Blob([req.file.buffer], { type: req.file.mimetype || 'text/csv' }), req.file.originalname || 'session.csv');
-    }
-    for (const [k, v] of Object.entries(req.body || {})) {
-      if (typeof v === 'string') fd.append(k, v);
-    }
-    const headers = {};
-    if (token) headers.Authorization = 'Bearer ' + token;
-    const upstream = await fetch(`${PROD}/api/device/upload`, { method: 'POST', headers, body: fd });
-    const ct = upstream.headers.get('content-type') || '';
-    if (ct.includes('application/json')) {
-      return res.status(upstream.status).json(await upstream.json());
-    }
-    const buf = Buffer.from(await upstream.arrayBuffer());
-    res.status(upstream.status);
-    res.setHeader('Content-Type', ct || 'application/octet-stream');
-    res.send(buf);
-  } catch (err) {
-    console.error('[facade] device/upload failed:', err);
-    res.status(502).json({ error: 'Upstream unreachable', detail: err.message });
-  }
-});
-
 // ── Everything else → proxy straight to production ──────────────────────────
 app.use('/api', async (req, res) => {
   try {

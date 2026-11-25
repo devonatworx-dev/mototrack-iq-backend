@@ -6,7 +6,7 @@
 
 ## Overview
 
-MotoTrackIQ Backend v2 is a REST API server for the MotoTrackIQ v2 portal. It handles rider authentication, session management, CSV upload and analysis, beta signup, and admin operations. Built with Node.js (ES modules), Express, and SQLite via `sql.js`.
+MotoTrackIQ Backend v2 is a REST API server for the MotoTrackIQ portal. Riders sign up directly (email/password, Google, Microsoft) and upload their own session files. Built with Node.js (ES modules), Express, and SQLite via `sql.js`. The waitlist HTTP routes and the ESP32 bridge are retired. Existing `beta_signups` and `sessions` rows, including older bridge captures, stay in the database.
 
 ---
 
@@ -56,14 +56,10 @@ pm2 logs mototrackiq-backend-v2
 ### Analysis
 | Method | Endpoint | Description |
 |---|---|---|
-| POST | `/api/analyze` | Upload CSV and get lap analysis (public, no auth) |
-| GET | `/api/sessions/:id/analysis` | Get analysis for a session (auth required) |
-
-### Beta
-| Method | Endpoint | Description |
-|---|---|---|
-| POST | `/api/beta/signup` | Join beta waitlist |
-| GET | `/api/beta/stats` | Get beta signup stats |
+| POST | `/api/analyze` | Upload CSV and get lap analysis (rider JWT) |
+| GET | `/api/sessions/:id/analysis` | Get analysis for a session (rider JWT) |
+| GET | `/api/sessions/:id/report-link` | Mint a signed browser URL for an existing report (rider JWT, owner only) |
+| GET | `/api/device/sessions/:id/report` | Download that PDF. Requires the signed `token` query from the link above, or the admin key. This is the only `/api/device` route. |
 
 ### Admin
 | Method | Endpoint | Description |
@@ -106,12 +102,19 @@ The backend sends emails via the Gmail API using OAuth2 refresh tokens.
 
 | Variable | Description |
 |---|---|
-| `PORT` | Server port (default: 3013) |
-| `JWT_SECRET` | Secret for JWT signing |
-| `FRONTEND_URL` | CORS origin (default: `http://192.168.1.77:3015`) |
-| `GMAIL_CLIENT_ID` | OAuth2 client ID |
-| `GMAIL_CLIENT_SECRET` | OAuth2 client secret |
-| `GMAIL_REFRESH_TOKEN` | OAuth2 refresh token |
+| `PORT` | Server port (default: 3009) |
+| `JWT_SECRET` | Required. Secret for rider JWTs. No default. |
+| `FRONTEND_URL` | Portal origin used in email links |
+| `GOOGLE_CLIENT_ID` | Gmail API client id (sender). Not the sign-in client. |
+| `GOOGLE_CLIENT_SECRET` | Gmail API client secret |
+| `GOOGLE_REFRESH_TOKEN` | Gmail API refresh token |
+| `AUTH_RATE_LIMIT_MAX` | Per-IP cap for auth routes. Default `8`, clamped to 1–40. |
+| `AUTH_RATE_LIMIT_WINDOW_MS` | Per-IP window. Default `900000` (15 minutes). |
+| `AUTH_EMAIL_MAX` | Per-mailbox cap for register, resend, and forgot-password. Default `5`, clamped to 1–20. |
+| `AUTH_EMAIL_WINDOW_MS` | Per-mailbox window. Default `3600000` (1 hour). |
+| `AUTH_EMAIL_COOLDOWN_MS` | Minimum gap between mail to the same address. Default `60000`. `0` turns off only the gap. |
+
+None of the `AUTH_*` variables are required. The server boots with the defaults. There is no device-ingest token.
 
 ---
 
