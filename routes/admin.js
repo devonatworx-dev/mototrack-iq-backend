@@ -1,7 +1,7 @@
 import express from 'express';
 import bcrypt from 'bcryptjs';
 import { v4 as uuidv4 } from 'uuid';
-import { getAllRiders, getRiderById, getRiderByEmail, createRider, updateRider, deleteRider, createPromoCode, listPromoCodes, getPromoCode, setPromoActive, addReportCredits, getAllFeedback, getFeedbackById, setFeedbackApproval, setFeedbackFeatured, deleteFeedback, deleteSession, updateSession, getRiderSessionsForAdmin, getRecentSessions, getSessionById } from '../lib/db.js';
+import { getAllRiders, getRiderById, getRiderByEmail, createRider, updateRider, deleteRider, recordMarketingConsent, createPromoCode, listPromoCodes, getPromoCode, setPromoActive, addReportCredits, getAllFeedback, getFeedbackById, setFeedbackApproval, setFeedbackFeatured, deleteFeedback, deleteSession, updateSession, getRiderSessionsForAdmin, getRecentSessions, getSessionById } from '../lib/db.js';
 import { signReportUrl } from '../lib/reportLink.js';
 import { requireAdmin } from '../lib/middleware/auth.js';
 import { createBackup, listBackups } from '../lib/backup.js';
@@ -91,14 +91,15 @@ router.post('/riders', (req, res) => {
       return res.status(409).json({ error: 'A rider with that email already exists' });
     }
     const id = uuidv4();
-    const now = new Date().toISOString();
     const passwordHash = bcrypt.hashSync(String(password), 10);
     createRider({
       id, firstName, lastName: lastName || '', email,
       passwordHash, bikes: bikes || null, primaryTrack: primaryTrack || null,
-      riderType: riderType || null, experience: experience || null,
-      consentAt: now
+      riderType: riderType || null, experience: experience || null
     });
+    // Admin-created accounts are not a marketing opt-in. Terms acceptance,
+    // when it happens, is the portal checkbox and is not this flag.
+    recordMarketingConsent({ riderId: id, email, granted: false, source: 'admin' });
     // Mark verified immediately (createRider inserts verified=0) and set plan intent.
     updateRider(id, { verified: 1, verifyToken: null, verifyTokenExpiry: null, plan: plan || null });
     const n = parseInt(credits, 10);

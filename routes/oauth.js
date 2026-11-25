@@ -97,7 +97,9 @@ router.get('/:provider/start', limitStart, (req, res) => {
     state,
     provider,
     verifier: providerConfig(provider).pkce ? verifier : '',
-    consent: req.query.consent === '1',
+    // consent=1 is the optional marketing checkbox (portal sends it only when
+    // that box is checked). It is not Terms acceptance and not required.
+    consent: req.query.consent === '1' || req.query.consent === 'true' || req.query.marketingConsent === '1' || req.query.marketingConsent === 'true',
     ontario: req.query.ontario === '1',
     expiresAt: new Date(Date.now() + STATE_TTL_MS).toISOString(),
   });

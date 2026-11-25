@@ -4,6 +4,8 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import puppeteer from 'puppeteer-core';
 import { encodeMessage, htmlWrap, FROM_EMAIL } from '../lib/email.js';
+import { initDb, lookupRiderByEmail, recipientAllowsMarketing } from '../lib/db.js';
+import { buildUnsubscribeUrl, listUnsubscribeHeaders, signUnsubscribeToken } from '../lib/casl.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CONFIG_DIR = path.join(__dirname, '..', 'config');
@@ -87,7 +89,11 @@ const body = `
       </p>
 `;
 
-const html = htmlWrap('MotoTrackIQ — your credits are ready', body);
+await initDb();
+const rider = lookupRiderByEmail(TO);
+const allowed = recipientAllowsMarketing(TO);
+const unsubscribeUrl = buildUnsubscribeUrl(signUnsubscribeToken({ riderId: rider?.id, email: TO }));
+const html = htmlWrap('MotoTrackIQ — your credits are ready', body, { commercial: true, unsubscribeUrl });
 
 // ── Preflight ─────────────────────────────────────────────────────────────────
 const checks = {
@@ -101,7 +107,9 @@ const checks = {
   'no mojibake'             : !/Ã¢Â€Â/.test(html),
   'no unescaped entities'   : /&(mdash|nbsp|amp);/.test(html) === false,
   '4 credits stated'        : /4 report credits/.test(html),
-  'VRRA bonus mentioned'    : /VRRA member bonus/.test(html)
+  'VRRA bonus mentioned'    : /VRRA member bonus/.test(html),
+  'casl unsubscribe link'   : html.includes(unsubscribeUrl),
+  'casl mailing address'    : html.includes((process.env.BUSINESS_MAILING_ADDRESS || '[Mailing address coming soon]').trim())
 };
 
 console.log('=== PREFLIGHT ===');
@@ -138,6 +146,11 @@ if (process.env.DRY_RUN === '1') {
 }
 
 // ── Send ──────────────────────────────────────────────────────────────────────
+if (!allowed) {
+  console.error('\nREFUSING TO SEND: recipient has not consented to marketing email.');
+  process.exit(1);
+}
+
 const creds = JSON.parse(readFileSync(path.join(CONFIG_DIR, 'credentials.json'), 'utf8'));
 const inst = creds.installed || creds.web || creds;
 const tok = JSON.parse(readFileSync(path.join(CONFIG_DIR, 'token.json'), 'utf8'));
@@ -147,7 +160,7 @@ const gmail = google.gmail({ version: 'v1', auth });
 
 const res = await gmail.users.messages.send({
   userId: 'me',
-  requestBody: { raw: encodeMessage(TO, SUBJECT, html) }
+  requestBody: { raw: encodeMessage(TO, SUBJECT, html, listUnsubscribeHeaders(unsubscribeUrl)) }
 });
 console.log('\nSENT:', JSON.stringify({ id: res.data.id, threadId: res.data.threadId }));
 console.log('to:', TO, '| from:', FROM_EMAIL, '| subject:', SUBJECT);

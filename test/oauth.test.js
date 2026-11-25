@@ -137,7 +137,10 @@ test('a verified Google sign-up creates a rider with consent, Ontario, and one f
   assert.equal(session.isNew, true);
   assert.equal(session.rider.email, 'ada@example.com');
   assert.equal(session.rider.verified, 1);
-  assert.ok(session.rider.consentAt);
+  assert.equal(Number(session.rider.marketingConsent), 1);
+  assert.equal(session.rider.marketingConsentSource, 'oauth');
+  assert.ok(session.rider.marketingConsentAt);
+  assert.equal(session.rider.consentAt, null);
   assert.ok(session.rider.ontarioAttestedAt);
   assert.equal(session.rider.passwordHash, undefined);
   const ent = getEntitlement(session.rider.id);
@@ -237,8 +240,8 @@ test('an unverified provider email does not link or create', async () => {
   assert.equal(getRiderByEmail('grace@example.com').id, 'rider-grace');
 });
 
-test('a new Google user without consent is not saved', async () => {
-  const started = await start('google');
+test('a new Google user without marketing consent is saved and not opted in', async () => {
+  const started = await start('google', '?ontario=1');
   const state = new URL(started.location).searchParams.get('state');
   mockProvider((href) => {
     if (href.includes('/token')) return jsonResponse({ access_token: 't' });
@@ -251,8 +254,39 @@ test('a new Google user without consent is not saved', async () => {
     });
   });
   const back = await fetch(`${base}/api/auth/oauth/google/callback?code=c&state=${state}`, { redirect: 'manual' });
-  assert.equal(new URL(back.headers.get('location')).searchParams.get('oauth_error'), 'consent_required');
-  assert.equal(getRiderByEmail('new@example.com'), null);
+  const landed = new URL(back.headers.get('location'));
+  assert.equal(landed.searchParams.get('oauth_error'), null);
+  const code = landed.searchParams.get('oauth_code');
+  const session = await (await fetch(`${base}/api/auth/oauth/exchange`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ code }),
+  })).json();
+  assert.equal(session.success, true);
+  assert.equal(session.isNew, true);
+  assert.equal(session.rider.email, 'new@example.com');
+  assert.equal(Number(session.rider.marketingConsent), 0);
+  assert.equal(session.rider.marketingConsentSource, 'oauth');
+  assert.ok(session.rider.ontarioAttestedAt);
+  assert.equal(session.rider.consentAt, null);
+});
+
+test('a new Google user without Ontario residency is not saved', async () => {
+  const started = await start('google');
+  const state = new URL(started.location).searchParams.get('state');
+  mockProvider((href) => {
+    if (href.includes('/token')) return jsonResponse({ access_token: 't' });
+    return jsonResponse({
+      sub: 'google-no-ontario',
+      email: 'no-ontario@example.com',
+      email_verified: true,
+      given_name: 'No',
+      family_name: 'Ontario',
+    });
+  });
+  const back = await fetch(`${base}/api/auth/oauth/google/callback?code=c&state=${state}`, { redirect: 'manual' });
+  assert.equal(new URL(back.headers.get('location')).searchParams.get('oauth_error'), 'ontario_required');
+  assert.equal(getRiderByEmail('no-ontario@example.com'), null);
 });
 
 test('a cancelled provider consent and a replayed state do not sign anyone in', async () => {

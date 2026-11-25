@@ -38,12 +38,22 @@ pm2 logs mototrackiq-backend-v2
 ### Auth
 | Method | Endpoint | Description |
 |---|---|---|
-| POST | `/api/auth/register` | Register new rider |
+| POST | `/api/auth/register` | Register new rider. Optional `marketingConsent` boolean (default false). |
 | POST | `/api/auth/login` | Login, returns JWT |
 | POST | `/api/auth/forgot-password` | Send reset email |
 | POST | `/api/auth/reset-password` | Reset with token |
 | POST | `/api/auth/change-password` | Change password (requires JWT) |
 | GET | `/api/auth/me` | Get current user |
+| GET | `/api/auth/oauth/:provider/start` | Start provider sign-in. `ontario=1` is required for a new account. `consent=1` is optional marketing consent, not a requirement and not Terms acceptance. |
+| GET | `/api/email/unsubscribe?token=` | One-click marketing unsubscribe. POST accepts the same token (List-Unsubscribe-Post). |
+
+### Marketing consent (CASL)
+
+`POST /api/auth/register` accepts `marketingConsent`. A JSON boolean `true`, the number `1`, or the strings `"true"` and `"1"` opt in. Omitted, `false`, and every other value do not. The choice is stored on the rider (`marketingConsent`, `marketingConsentAt`, `marketingConsentSource`) and as a row in `marketing_consent_records` with source `register`. Confirming the email does not change it.
+
+Provider start (`GET /api/auth/oauth/:provider/start`) still requires `ontario=1` for a new account. `consent=1` (or `consent=true`, or `marketingConsent=1`) means the marketing box was checked and is recorded with source `oauth`. Leaving it off still creates the account and records `marketingConsent` 0. Terms of Service and Privacy Policy acceptance is a separate portal checkbox. This API does not read it from `consent` or `marketingConsent`.
+
+`GET /api/admin/riders` includes `marketingConsent`, `marketingConsentAt`, and `marketingConsentSource`. Commercial sends (beta invites, rider follow-ups, and the promotional block on a report) go only to addresses with `marketingConsent` 1. Verification, password reset, welcome, credentials, and the report itself do not. Legacy `beta_signups` rows are marked `marketingConsent` 0.
 
 ### Sessions
 | Method | Endpoint | Description |
@@ -64,7 +74,7 @@ pm2 logs mototrackiq-backend-v2
 ### Admin
 | Method | Endpoint | Description |
 |---|---|---|
-| GET | `/api/admin/riders` | List all riders (auth required) |
+| GET | `/api/admin/riders` | List all riders, including marketing consent fields (admin key) |
 | GET | `/api/admin/analytics` | Platform analytics (auth required) |
 | GET | `/api/admin/backups` | List backup file names, sizes, and times (admin key). No file contents. |
 | POST | `/api/admin/backups` | Write and verify one backup now (admin key). No file contents in the response. |
@@ -136,6 +146,9 @@ The backend sends emails via the Gmail API using OAuth2 refresh tokens.
 | `PORT` | Server port (default: 3009) |
 | `JWT_SECRET` | Required. Secret for rider JWTs. No default. |
 | `FRONTEND_URL` | Portal origin used in email links |
+| `API_PUBLIC_URL` | Public origin of this API. Unsubscribe links use it, then `FRONTEND_URL`. |
+| `BUSINESS_MAILING_ADDRESS` | Optional. Physical address on commercial email. Unset shows `[Mailing address coming soon]` and logs a warning. |
+| `UNSUBSCRIBE_SECRET` | Optional HMAC for unsubscribe links. Falls back to `REPORT_LINK_SECRET`, then `JWT_SECRET`. Does not change `JWT_SECRET`. |
 | `GOOGLE_CLIENT_ID` | Gmail API client id (sender). Not the sign-in client. |
 | `GOOGLE_CLIENT_SECRET` | Gmail API client secret |
 | `GOOGLE_REFRESH_TOKEN` | Gmail API refresh token |

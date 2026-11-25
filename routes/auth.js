@@ -2,8 +2,9 @@ import express from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { v4 as uuidv4 } from 'uuid';
-import { createRider, getRiderByEmail, getRiderById, getRiderByVerifyToken, updateRider } from '../lib/db.js';
+import { createRider, getRiderByEmail, getRiderById, getRiderByVerifyToken, recordMarketingConsent, updateRider } from '../lib/db.js';
 import { sendVerifyEmail, sendPasswordResetEmail, sendWelcomeEmail } from '../lib/email.js';
+import { parseMarketingConsent } from '../lib/casl.js';
 import { requireAuth } from '../lib/middleware/auth.js';
 import config from '../lib/config.js';
 import oauthRoutes from './oauth.js';
@@ -41,6 +42,10 @@ router.post('/register', authRateLimit('register'), emailSendLimit('register'), 
   try {
     const { firstName, lastName, phone, experience, riderType, bikes, primaryTrack, lapTimer, ontarioResident } = req.body;
     const email = normEmail(req.body.email);
+    // Optional. Omitted, false, and any non-affirmative value are not consent.
+    // Terms and Privacy acceptance is a separate portal checkbox and is not this field.
+    const marketingConsent = parseMarketingConsent(req.body.marketingConsent);
+    const sentMarketingChoice = req.body && Object.prototype.hasOwnProperty.call(req.body, 'marketingConsent');
     if (!firstName || !lastName || !email) return res.status(400).json({ error: 'firstName, lastName, and email are required' });
     const firstError = validateRiderName(firstName, { required: true, label: 'First name' });
     if (firstError) return res.status(400).json({ error: firstError });
@@ -63,18 +68,22 @@ router.post('/register', authRateLimit('register'), emailSendLimit('register'), 
       // Pending → re-issue a fresh verification token/email (idempotent resend).
       const verifyToken = uuidv4();
       updateRider(existing.id, { verifyToken, verifyTokenExpiry: new Date(Date.now() + VERIFY_TTL_MS).toISOString() });
+      if (sentMarketingChoice) {
+        recordMarketingConsent({ riderId: existing.id, email, granted: marketingConsent, source: 'register' });
+      }
       await sendVerifyEmail(email, existing.firstName, verifyToken, email);
       return res.status(200).json(REGISTER_OK);
     }
 
     const verifyToken = uuidv4();
-    createRider({
+    const rider = createRider({
       id: uuidv4(), firstName: safeFirst, lastName: safeLast, email, phone: phone || null,
       passwordHash: null, experience: experience || null, riderType: riderType || null,
       bikes: bikes || null, primaryTrack: primaryTrack || null, lapTimer: lapTimer || null, notes: null,
       verifyToken, verifyTokenExpiry: new Date(Date.now() + VERIFY_TTL_MS).toISOString(),
       ontarioAttestedAt
     });
+    recordMarketingConsent({ riderId: rider.id, email, granted: marketingConsent, source: 'register' });
     await sendVerifyEmail(email, safeFirst, verifyToken, email);
     // 200, same body as an existing address, so the status is not an oracle.
     res.status(200).json(REGISTER_OK);
@@ -82,8 +91,8 @@ router.post('/register', authRateLimit('register'), emailSendLimit('register'), 
 });
 
 // ── Verify email ─────────────────────────────────────────────────────────────
-// Validates the token, marks the rider verified + records consent, and returns
-// a short-lived setup token the client uses to POST /set-password.
+// Validates the token and marks the rider verified. Marketing consent is
+// whatever was stored at registration; confirming the address does not opt in.
 router.post('/verify', (req, res) => {
   try {
     const token = req.body.token || req.query.token;
@@ -94,8 +103,7 @@ router.post('/verify', (req, res) => {
       return res.status(400).json({ error: 'This verification link has expired. Please sign up again to get a new one.' });
     }
 
-    const now = new Date().toISOString();
-    updateRider(rider.id, { verified: 1, consentAt: rider.consentAt || now });
+    updateRider(rider.id, { verified: 1 });
     // Whether or not they've set a password yet, tell the client the next step.
     const needsPassword = !rider.passwordHash;
     res.json({
