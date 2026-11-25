@@ -4,11 +4,32 @@ import { v4 as uuidv4 } from 'uuid';
 import { getAllRiders, getRiderById, getRiderByEmail, createRider, updateRider, deleteRider, createPromoCode, listPromoCodes, getPromoCode, setPromoActive, addReportCredits, getAllFeedback, getFeedbackById, setFeedbackApproval, setFeedbackFeatured, deleteFeedback, deleteSession, updateSession, getRiderSessionsForAdmin, getRecentSessions, getSessionById } from '../lib/db.js';
 import { signReportUrl } from '../lib/reportLink.js';
 import { requireAdmin } from '../lib/middleware/auth.js';
+import { createBackup, listBackups } from '../lib/backup.js';
 
 const router = express.Router();
 
 // All admin routes require a valid admin key (X-Admin-Key header / Bearer).
 router.use(requireAdmin);
+
+// ── Database backups ─────────────────────────────────────────────────
+// Metadata only: name, size, and mtime. There is no download route.
+router.get('/backups', (req, res) => {
+  try {
+    res.json({ backups: listBackups() });
+  } catch (err) {
+    console.error('[admin/backups]', err.message);
+    res.status(500).json({ error: 'Failed to list backups' });
+  }
+});
+
+router.post('/backups', async (req, res) => {
+  try {
+    const backup = await createBackup();
+    res.status(201).json({ success: true, backup });
+  } catch (err) {
+    if (!res.headersSent) res.status(500).json({ error: 'Backup failed' });
+  }
+});
 
 // ── Feedback moderation ──────────────────────────────────────────────
 router.get('/feedback', (req, res) => {
