@@ -97,7 +97,8 @@ const VALIDATION = {
 function assertLead(lead) {
   const html = buildBetaInviteHtml(lead.firstName, {
     bodyExtra: lead.bodyExtra,
-    signOff: lead.signOff
+    signOff: lead.signOff,
+    unsubscribeUrl: `${SITE}/api/email/unsubscribe?token=preview`
   });
   // Strip tags for prose checks; keep the raw html for structural checks.
   const text = html
@@ -130,7 +131,9 @@ function assertLead(lead) {
     'has CTA button': /linear-gradient\(135deg,#f97316/.test(html),
     'has logo img': /<img[^>]+logo-email\.png/.test(html),
     'no unescaped entity': !/&(mdash|nbsp|amp);/.test(html),
-    'reply route present': /info@mototrackiq\.com/.test(html)
+    'reply route present': /info@mototrackiq\.com/.test(html),
+    'casl unsubscribe link': /api\/email\/unsubscribe\?token=preview/.test(html),
+    'casl sender name': /MotoTrackIQ/.test(html)
   };
   return checks;
 }
@@ -161,6 +164,10 @@ for (const lead of leads) {
     bodyExtra: lead.bodyExtra
   });
   console.log(`   SEND: ${JSON.stringify(res)}`);
+  if (!res.success) {
+    failed = true;
+    console.error(`   REFUSED ${lead.firstName}: ${res.error}`);
+  }
 }
 
 if (failed) process.exit(1);

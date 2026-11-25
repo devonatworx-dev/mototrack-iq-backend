@@ -8,6 +8,7 @@ import { cleanExpiredSessions, migrateLegacyBetaSignups, initDb, getEntitlement,
 import { analyzeCSV } from './lib/analyzer.js';
 import { generateReport } from './lib/reportGenerator.js';
 import { sendReportEmail } from './lib/email.js';
+import { warnIfMailingAddressMissing } from './lib/casl.js';
 import multer from 'multer';
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 import authRoutes from './routes/auth.js';
@@ -17,6 +18,7 @@ import deviceReportsRoutes from './routes/device-reports.js';
 import promoRoutes from './routes/promo.js';
 import feedbackRoutes from './routes/feedback.js';
 import checkoutRoutes from './routes/checkout.js';
+import emailRoutes from './routes/email.js';
 import { requireAuth } from './lib/middleware/auth.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -47,6 +49,7 @@ if (fs.existsSync(publicPath)) app.use(express.static(publicPath));
 app.get('/health', (req, res) => res.json({ status: 'ok', v: '2.0.0' }));
 
 app.use('/api/auth', authRoutes);
+app.use('/api/email', emailRoutes);
 app.use('/api/sessions', sessionsRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/device', deviceReportsRoutes);
@@ -201,6 +204,7 @@ app.get('*', (req, res) => {
 });
 
 async function start() {
+  warnIfMailingAddressMissing();
   await initDb();
   console.log('Database initialized');
 
