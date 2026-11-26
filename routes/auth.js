@@ -234,11 +234,11 @@ router.put('/profile', requireAuth, (req, res) => {
 });
 
 // ── Membership plan selection ───────────────────────────────────────────────
-// The riders.plan column is what getEntitlement() reads, and 'season' / 'pro'
-// there mean unlimited reports. So this route must never write a paid plan:
-// paid access only comes from a verified Lemon Squeezy webhook. 'free' and
-// 'per_event' grant nothing by themselves (per-event access is report credits),
-// so recording them as interest stays allowed.
+// riders.plan 'season' and 'pro' are grandfathered unlimited accounts already
+// stored on the rider. Checkout does not write those plans anymore. A Season
+// Pass is a pass_grants row (48 sessions, 6 per day, 8 days), not plan='season'.
+// This route must never write 'season' or 'pro'. 'free' and 'per_event' grant
+// nothing by themselves, so recording them as interest stays allowed.
 const ALLOWED_PLANS = ['free', 'per_event', 'season', 'pro'];
 const UNLIMITED_PLAN_IDS = ['season', 'pro'];
 router.post('/select-plan', requireAuth, (req, res) => {

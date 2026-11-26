@@ -13,7 +13,7 @@ import { requireAuth } from '../lib/middleware/auth.js';
 import {
   getRiderById,
   addReportCredits,
-  updateRider,
+  grantPass,
   getEntitlement,
   hasProcessedOrder,
   recordProcessedOrder,
@@ -24,10 +24,11 @@ import {
   verifyWebhookSignature,
   parseOrderWebhook,
 } from '../lib/lemonsqueezy.js';
+import { CHECKOUT_PRODUCT_KEYS } from '../lib/pricing.js';
 
 const router = express.Router();
 
-const PRODUCT_KEYS = ['single', 'event', 'season'];
+const PRODUCT_KEYS = CHECKOUT_PRODUCT_KEYS;
 
 // ── Create checkout URL ─────────────────────────────────────────────────────
 // POST /api/checkout/:product  { quantity? }
@@ -96,15 +97,23 @@ router.post('/webhooks/lemonsqueezy', (req, res) => {
       return res.status(200).json({ ok: true, unmatched: true });
     }
 
-    // Apply the grant.
+    // Grant only what the paid variant resolved to. A mismatched custom_data
+    // product_key is logged and otherwise ignored.
+    if (parsed.productKeyMismatch) {
+      console.warn(`[ls-webhook] custom_data.product_key=${parsed.claimedProductKey} ignored; paid variant ${parsed.variantId} is ${parsed.productKey}; order ${parsed.orderId}`);
+    }
     const grant = parsed.grant;
+    const quantity = parsed.quantity || 1;
     if (grant.type === 'credits') {
-      const total = grant.amount * (parsed.quantity || 1);
+      const total = grant.amount * quantity;
       addReportCredits(riderId, total);
-      console.log(`[ls-webhook] +${total} credits to rider ${riderId} (${grant.label} x${parsed.quantity})`);
-    } else if (grant.type === 'plan') {
-      updateRider(riderId, { plan: grant.plan });
-      console.log(`[ls-webhook] set plan=${grant.plan} for rider ${riderId} (${grant.label})`);
+      console.log(`[ls-webhook] +${total} flexible credits to rider ${riderId} (${grant.label} x${quantity})`);
+    } else if (grant.type === 'event_pass') {
+      grantPass(riderId, 'event', { quantity, orderId: parsed.orderId });
+      console.log(`[ls-webhook] +${quantity} Event Pass(es) to rider ${riderId}`);
+    } else if (grant.type === 'season_pass') {
+      grantPass(riderId, 'season', { quantity, orderId: parsed.orderId });
+      console.log(`[ls-webhook] +${quantity} Season Pass(es) to rider ${riderId}`);
     }
 
     if (parsed.orderId) recordProcessedOrder(parsed.orderId, riderId, parsed.productKey, 'granted');
