@@ -1,7 +1,7 @@
 import express from 'express';
 import bcrypt from 'bcryptjs';
 import { v4 as uuidv4 } from 'uuid';
-import { getAllRiders, getRiderById, getRiderByEmail, createRider, updateRider, deleteRider, recordMarketingConsent, createPromoCode, listPromoCodes, getPromoCode, setPromoActive, addReportCredits, getAllFeedback, getFeedbackById, setFeedbackApproval, setFeedbackFeatured, deleteFeedback, deleteSession, updateSession, getRiderSessionsForAdmin, getRecentSessions, getSessionById } from '../lib/db.js';
+import { getAllRiders, getRiderById, getRiderByEmail, createRider, updateRider, deleteRider, recordMarketingConsent, createPromoCode, listPromoCodes, getPromoCode, setPromoActive, addReportCredits, getEntitlement, getAllFeedback, getFeedbackById, setFeedbackApproval, setFeedbackFeatured, deleteFeedback, deleteSession, updateSession, getRiderSessionsForAdmin, getRecentSessions, getSessionById } from '../lib/db.js';
 import { signReportUrl } from '../lib/reportLink.js';
 import { requireAdmin } from '../lib/middleware/auth.js';
 import { createBackup, listBackups } from '../lib/backup.js';
@@ -90,6 +90,15 @@ router.post('/riders', (req, res) => {
     if (getRiderByEmail(email)) {
       return res.status(409).json({ error: 'A rider with that email already exists' });
     }
+    const specified = req.body && Object.prototype.hasOwnProperty.call(req.body, 'credits')
+      && credits !== null && credits !== '';
+    let startingCredits = null;
+    if (specified) {
+      startingCredits = parseInt(credits, 10);
+      if (!Number.isFinite(startingCredits) || startingCredits < 0) {
+        return res.status(400).json({ error: 'credits must be a number >= 0' });
+      }
+    }
     const id = uuidv4();
     const passwordHash = bcrypt.hashSync(String(password), 10);
     createRider({
@@ -101,10 +110,11 @@ router.post('/riders', (req, res) => {
     // when it happens, is the portal checkbox and is not this flag.
     recordMarketingConsent({ riderId: id, email, granted: false, source: 'admin' });
     // Mark verified immediately (createRider inserts verified=0) and set plan intent.
+    // createRider already includes the one signup credit. `credits`, when sent,
+    // is the balance to store, not an amount to add on top of that credit.
     updateRider(id, { verified: 1, verifyToken: null, verifyTokenExpiry: null, plan: plan || null });
-    const n = parseInt(credits, 10);
-    let entitlement = null;
-    if (n && n > 0) entitlement = addReportCredits(id, n);
+    if (startingCredits !== null) updateRider(id, { reportCredits: startingCredits });
+    const entitlement = getEntitlement(id);
     const rider = getRiderById(id);
     const { passwordHash: _ph, verifyToken: _vt, resetToken: _rt, resetTokenExpiry: _re, ...safe } = rider;
     res.status(201).json({ success: true, rider: safe, entitlement });

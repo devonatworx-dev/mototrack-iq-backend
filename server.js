@@ -4,7 +4,8 @@ import cors from 'cors';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath, pathToFileURL } from 'url';
-import { cleanExpiredSessions, migrateLegacyBetaSignups, initDb, getEntitlement, consumeReportCredit, addReportCredits, getDbFilePath } from './lib/db.js';
+import { cleanExpiredSessions, migrateLegacyBetaSignups, initDb, getEntitlement, planSessionCharge, consumeSessionCredit, refundSessionCredit, getDbFilePath } from './lib/db.js';
+import { denialPayload, normalizeSessionDay } from './lib/pricing.js';
 import { createBackup, startDailyBackups, resolveBackupDir, backupRetention } from './lib/backup.js';
 import { analyzeCSV } from './lib/analyzer.js';
 import { generateReport } from './lib/reportGenerator.js';
@@ -58,15 +59,17 @@ app.use('/api/promo', promoRoutes);
 app.use('/api/feedback', feedbackRoutes);
 app.use('/api', checkoutRoutes);  // /api/checkout/:product (JSON body, auth)
 
-// P0 (2026-07-06): these were open anonymous free-analysis routes (unlimited free
-// full analysis + PDF, no account). The live frontend uses the authed /api/sessions
-// flow and does NOT call these, so gating them behind requireAuth closes a free-tier
-// leak with no user-facing impact. Revisit once the credit/entitlement system (P1)
-// lands — the free report should decrement a credit, not be wide open.
-// UPLOAD IS THE PAYWALL (P2 redesign): analyzing/uploading a session is what
-// consumes a token. When the rider is out of tokens we block here with a 402
-// so they never do the work, and the frontend shows the "out of tokens" CTA.
-// (PDF download is now FREE — the token was already spent at upload.)
+function oneShotDay(req, analysis) {
+  return normalizeSessionDay(req.body?.date) || normalizeSessionDay(analysis?.summary?.sessionDate);
+}
+
+// These routes used to be anonymous. They require a rider JWT.
+// /api/analyze is a preview gate only: it refuses a rider who cannot pay for
+// a session, and it does not spend a credit. POST /api/sessions spends exactly
+// one credit for that session. Generating or re-downloading its PDF is free.
+// /api/report and /api/report/email are one-shot PDFs with no saved session,
+// so each successful one spends one credit here (not a second charge on top
+// of analyze).
 app.post('/api/analyze', requireAuth, upload.single('file'), (req, res) => {
   try {
     const csv = req.file ? req.file.buffer.toString('utf-8') : req.body.csv;
@@ -74,13 +77,7 @@ app.post('/api/analyze', requireAuth, upload.single('file'), (req, res) => {
 
     const ent = getEntitlement(req.riderId);
     if (ent && !ent.canGenerate) {
-      return res.status(402).json({
-        error: 'Out of tokens',
-        paywall: true,
-        reportCredits: ent.reportCredits,
-        plan: ent.plan,
-        message: 'Out of tokens \u2014 please purchase from the Membership page or redeem a promo code from the menu.'
-      });
+      return res.status(402).json(denialPayload('out_of_credits', ent));
     }
 
     const data = analyzeCSV(csv);
@@ -94,20 +91,11 @@ app.post('/api/report', requireAuth, upload.single('file'), async (req, res) => 
     const csv = req.file ? req.file.buffer.toString('utf-8') : req.body.csv;
     if (!csv) return res.status(400).json({ error: 'No CSV provided' });
 
-    // CREDIT GATE (P1): the direct analyze->report path must honor the same
-    // paywall as /api/sessions/:id/report, otherwise it's a free-report bypass.
-    const ent = getEntitlement(req.riderId);
-    if (ent && !ent.canGenerate) {
-      return res.status(402).json({
-        error: 'Out of tokens',
-        paywall: true,
-        reportCredits: ent.reportCredits,
-        plan: ent.plan,
-        message: 'Out of tokens \u2014 please purchase from the Membership page or redeem a promo code from the menu.'
-      });
-    }
-
     const analysis = analyzeCSV(csv);
+    const day = oneShotDay(req, analysis);
+    // One-shot PDF with no saved session: this call is the charge.
+    const preview = planSessionCharge(req.riderId, day);
+    if (!preview.ok) return res.status(402).json(denialPayload(preview.code, preview.entitlement, preview));
     if (!analysis || !analysis.laps || analysis.laps.length === 0) {
       return res.status(422).json({ error: 'No valid laps found in this CSV.' });
     }
@@ -115,17 +103,15 @@ app.post('/api/report', requireAuth, upload.single('file'), async (req, res) => 
     const bikeName = (req.body.bike || '').trim();
     const pdf = await generateReport(analysis, { riderName, bikeName });
 
-    // Consume AFTER successful generation so a failure never burns a credit.
-    const after = consumeReportCredit(req.riderId);
-    if (!after) {
-      return res.status(402).json({ error: 'Out of tokens', paywall: true, message: 'Out of tokens \u2014 please purchase from the Membership page or redeem a promo code from the menu.' });
-    }
+    // Spend after the PDF exists so a failed render does not burn a credit.
+    const after = consumeSessionCredit(req.riderId, { sessionDate: day });
+    if (!after.ok) return res.status(402).json(denialPayload(after.code, after.entitlement, after));
 
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', 'attachment; filename="MotoTrackIQ-Report.pdf"');
-    res.setHeader('X-Report-Credits-Remaining', String(after.reportCredits));
-    res.setHeader('X-Reports-Generated', String(after.reportsGenerated));
-    res.setHeader('X-Ask-Review', after.reportsGenerated === 1 ? '1' : '0');
+    res.setHeader('X-Report-Credits-Remaining', String(after.entitlement.reportCredits));
+    res.setHeader('X-Reports-Generated', String(after.entitlement.reportsGenerated));
+    res.setHeader('X-Ask-Review', after.entitlement.reportsGenerated === 1 ? '1' : '0');
     return res.send(pdf);
   } catch (err) { console.error('[report]', err); return res.status(500).json({ error: err.message }); }
 });
@@ -142,46 +128,33 @@ app.post('/api/report/email', requireAuth, upload.single('file'), async (req, re
     const riderName = (req.body.riderName || req.body.name || '').trim();
     const bikeName  = (req.body.bike || '').trim();
 
-    // CREDIT GATE (P1): emailing a report is the same paid action as downloading
-    // one — gate it identically so it can't be used to bypass the paywall.
-    const ent = getEntitlement(req.riderId);
-    if (ent && !ent.canGenerate) {
-      return res.status(402).json({
-        error: 'Out of tokens',
-        paywall: true,
-        reportCredits: ent.reportCredits,
-        plan: ent.plan,
-        message: 'Out of tokens \u2014 please purchase from the Membership page or redeem a promo code from the menu.'
-      });
-    }
-
     const analysis = analyzeCSV(csv);
+    const day = oneShotDay(req, analysis);
+    // Same one-shot charge as /api/report. Analyze does not spend a credit.
+    const preview = planSessionCharge(req.riderId, day);
+    if (!preview.ok) return res.status(402).json(denialPayload(preview.code, preview.entitlement, preview));
     if (!analysis || !analysis.laps || analysis.laps.length === 0) {
       return res.status(422).json({ error: 'No valid laps found in this CSV. Check the file and try again.' });
     }
 
     const pdfBuffer = await generateReport(analysis, { riderName: riderName || 'Rider', bikeName });
 
-    // Consume AFTER successful generation, BEFORE emailing, so a rider can't
-    // repeatedly email themselves reports on a single credit.
-    const after = consumeReportCredit(req.riderId);
-    if (!after) {
-      return res.status(402).json({ error: 'Out of tokens', paywall: true, message: 'Out of tokens \u2014 please purchase from the Membership page or redeem a promo code from the menu.' });
-    }
+    // Spend before the send so a delivered email cannot be repeated for free.
+    // Refund the same balance if the email is not actually sent.
+    const charge = consumeSessionCredit(req.riderId, { sessionDate: day });
+    if (!charge.ok) return res.status(402).json(denialPayload(charge.code, charge.entitlement, charge));
     const sendResult = await sendReportEmail(email, riderName, pdfBuffer, analysis, {
       specials: req.body.specials !== 'false'
     });
     if (!sendResult.success) {
-      // Email failed after we consumed the credit — refund it so the rider
-      // isn't charged for a report they never received.
-      try { addReportCredits(req.riderId, 1); } catch (_) {}
+      try { refundSessionCredit(req.riderId, charge); } catch (_) {}
       return res.status(502).json({ error: 'Report generated but email failed', detail: sendResult.error });
     }
 
     return res.json({
       success: true,
       message: `Report sent to ${email}`,
-      reportCredits: after.reportCredits,
+      reportCredits: charge.entitlement.reportCredits,
       summary: {
         track: analysis.summary?.trackName,
         bestLap: analysis.lapStats?.best,

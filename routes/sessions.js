@@ -1,6 +1,7 @@
 import express from 'express';
 import { v4 as uuidv4 } from 'uuid';
-import { getSessionsByRider, getSessionById, createSessionData, getEntitlement, consumeReportCredit, getRiderById } from '../lib/db.js';
+import { getSessionsByRider, getSessionById, createSessionData, deleteSession, getEntitlement, consumeSessionCredit, planSessionCharge, getRiderById, dayReportAccess } from '../lib/db.js';
+import { denialPayload, normalizeSessionDay } from '../lib/pricing.js';
 import { backfillTrackMap, hasTrackMap } from '../lib/trackMapBackfill.js';
 import { analyzeCSV } from '../lib/analyzer.js';
 import { generateReport } from '../lib/reportGenerator.js';
@@ -24,18 +25,13 @@ router.post('/', requireAuth, (req, res) => {
     let analysis;
     try { analysis = analyzeCSV(rawCsv); }
     catch (e) { return res.status(400).json({ error: `CSV error: ${e.message}` }); }
-    // UPLOAD IS THE PAYWALL (P2): saving a session consumes one token, unless the
-    // rider is on an unlimited plan. Block here if out of tokens (belt-and-braces
-    // with the /api/analyze gate) so a session is never persisted for free.
-    const ent = getEntitlement(req.riderId);
-    if (ent && !ent.canGenerate) {
-      return res.status(402).json({
-        error: 'Out of tokens',
-        paywall: true,
-        reportCredits: ent.reportCredits,
-        plan: ent.plan,
-        message: 'Out of tokens \u2014 please purchase from the Membership page or redeem a promo code from the menu.'
-      });
+    // Saving the session spends exactly one credit (flexible, event day, or
+    // season day). /api/analyze only gates and does not spend. The PDF for
+    // this session is free after this charge.
+    const sessionDay = normalizeSessionDay(date) || normalizeSessionDay(analysis?.summary?.sessionDate);
+    const plan = planSessionCharge(req.riderId, sessionDay);
+    if (!plan.ok) {
+      return res.status(402).json(denialPayload(plan.code, plan.entitlement, plan));
     }
 
     // Fall back to the rider's profile bike when the upload doesn't specify one
@@ -46,17 +42,26 @@ router.post('/', requireAuth, (req, res) => {
       const rider = getRiderById(req.riderId);
       if (rider && rider.bikes) bikeVal = String(rider.bikes).split(',')[0].trim() || null;
     }
-    const session = createSessionData({ id: uuidv4(), riderId: req.riderId, name: name || `Session on ${analysis.summary.trackName}`, track: track || analysis.summary.trackName, bike: bikeVal, date: date||null, csvContent: rawCsv, analysisData: analysis });
+    const session = createSessionData({ id: uuidv4(), riderId: req.riderId, name: name || `Session on ${analysis.summary.trackName}`, track: track || analysis.summary.trackName, bike: bikeVal, date: date || sessionDay || null, csvContent: rawCsv, analysisData: analysis });
 
-    // Consume the token AFTER the session is safely persisted, so a failed save
-    // never burns a token. Unlimited plans are not decremented.
-    const after = consumeReportCredit(req.riderId);
+    // Charge after the row exists so a failed insert cannot spend a credit.
+    // consumeSessionCredit marks the session paid. A failed charge deletes it.
+    const charge = consumeSessionCredit(req.riderId, { sessionDate: sessionDay, sessionId: session.id });
+    if (!charge.ok) {
+      try { deleteSession(session.id); } catch (_) {}
+      return res.status(402).json(denialPayload(charge.code, charge.entitlement, charge));
+    }
     const { csvContent, ...safe } = session;
+    const ent = charge.entitlement;
     res.status(201).json({
-      session: safe,
+      session: { ...safe, creditConsumed: 1 },
       analysis,
-      reportCredits: after ? after.reportCredits : (ent ? ent.reportCredits : null),
-      reportsGenerated: after ? after.reportsGenerated : undefined
+      reportCredits: ent ? ent.reportCredits : null,
+      reportsGenerated: ent ? ent.reportsGenerated : undefined,
+      askReview: Boolean(ent && ent.reportsGenerated === 1),
+      charged: charge.source,
+      chargedDay: charge.sessionDate || null,
+      entitlement: ent
     });
   } catch (err) { console.error(err); res.status(500).json({ error: 'Failed' }); }
 });
@@ -104,11 +109,9 @@ router.get('/:id', requireAuth, (req, res) => {
   } catch (err) { console.error(err); res.status(500).json({ error: 'Failed' }); }
 });
 
-// Full PDF report — CREDIT-GATED (P1). Each generation consumes one report credit
-// unless the rider is on an unlimited plan (season/pro). When out of credits we
-// return 402 with a paywall payload so the frontend can show the upgrade CTA.
-// The credit is consumed only AFTER the PDF is successfully generated, so a
-// generation failure never burns a rider's credit.
+// PDF for a session that was paid when it was saved. Regenerating it is free.
+// A session that was never paid (no creditConsumed flag) is charged once here,
+// after the PDF is built, so a failed render does not spend the credit.
 router.post('/:id/report', requireAuth, async (req, res) => {
   try {
     const session = getSessionById(req.params.id);
@@ -119,15 +122,13 @@ router.post('/:id/report', requireAuth, async (req, res) => {
       return res.status(400).json({ error: 'No analysis data for this session yet. Please upload a CSV file first.' });
     }
 
-    const ent = getEntitlement(req.riderId);
-    if (ent && !ent.canGenerate) {
-      return res.status(402).json({
-        error: 'Out of tokens',
-        paywall: true,
-        reportCredits: ent.reportCredits,
-        plan: ent.plan,
-        message: 'Out of tokens \u2014 please purchase from the Membership page or redeem a promo code from the menu.'
-      });
+    const alreadyPaid = Number(session.creditConsumed) === 1;
+    const sessionDay = normalizeSessionDay(session.date) || normalizeSessionDay(session.analysisData?.summary?.sessionDate);
+    if (!alreadyPaid) {
+      const plan = planSessionCharge(req.riderId, sessionDay);
+      if (!plan.ok) {
+        return res.status(402).json(denialPayload(plan.code, plan.entitlement, plan));
+      }
     }
 
     // Legacy sessions (uploaded before the analyzer emitted trackMap) have no
@@ -149,25 +150,28 @@ router.post('/:id/report', requireAuth, async (req, res) => {
     const { riderName, bikeName } = req.body;
     const pdf = await generateReport(session.analysisData, { riderName: riderName||'Rider', bikeName: bikeName||session.bike||'' });
 
-    // Consume AFTER successful generation. If this returns null it means credits
-    // were exhausted between the check and now (race) — treat as paywall.
-    const after = consumeReportCredit(req.riderId);
-    if (!after) {
-      return res.status(402).json({ error: 'Out of tokens', paywall: true, message: 'Out of tokens \u2014 please purchase from the Membership page or redeem a promo code from the menu.' });
+    let ent = getEntitlement(req.riderId);
+    let chargedHere = false;
+    if (!alreadyPaid) {
+      const charge = consumeSessionCredit(req.riderId, { sessionDate: sessionDay, sessionId: session.id });
+      if (!charge.ok) {
+        return res.status(402).json(denialPayload(charge.code, charge.entitlement, charge));
+      }
+      ent = charge.entitlement;
+      chargedHere = !charge.duplicate;
     }
 
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="mototrackiq-report-${session.id}.pdf"`);
-    // Surface remaining credits + the review-ask trigger to the client.
-    res.setHeader('X-Report-Credits-Remaining', String(after.reportCredits));
-    res.setHeader('X-Reports-Generated', String(after.reportsGenerated));
-    res.setHeader('X-Ask-Review', after.reportsGenerated === 1 ? '1' : '0');
+    res.setHeader('X-Report-Credits-Remaining', String(ent ? ent.reportCredits : 0));
+    res.setHeader('X-Reports-Generated', String(ent ? ent.reportsGenerated : 0));
+    res.setHeader('X-Ask-Review', chargedHere && ent && ent.reportsGenerated === 1 ? '1' : '0');
     res.send(pdf);
   } catch (err) { console.error('REPORT ERROR:', err.message); console.error(err.stack); res.status(500).json({ error: 'Report failed: ' + err.message }); }
 });
 
-// Rider requests a short-lived signed link to (re)download an already-generated
-// report PDF. FREE — no credit is consumed (the credit was spent at generation).
+// Rider requests a short-lived signed link to (re)download a session PDF.
+// Free — the credit was spent when the session was saved.
 // Requires login + ownership; the returned URL works for browser navigation.
 router.get('/:id/report-link', requireAuth, (req, res) => {
   try {
@@ -206,6 +210,13 @@ router.post('/day-report', requireAuth, async (req, res) => {
       return sd === date || csd === date;
     });
     if (daySessions.length === 0) return res.status(404).json({ error: 'No sessions found for that date' });
+
+    // Included for a Season Pass (any date) or an Event Pass bound to this date.
+    // Flexible credits alone do not include it. The portal turns this 402 into an upsell.
+    const access = dayReportAccess(req.riderId, date);
+    if (!access.ok) {
+      return res.status(402).json(denialPayload(access.code, access.entitlement, access));
+    }
 
     // Same legacy gap as the single-session report: a day report picks the
     // first session that already has a track map, so a day of legacy
