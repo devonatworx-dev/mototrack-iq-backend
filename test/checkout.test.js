@@ -110,7 +110,9 @@ test('a test-mode order is ignored unless LS_TEST_MODE=true', async () => {
   assert.equal(getRiderById('buyer').reportCredits || 0, before);
   assert.equal(ent.passes.event.length, passesBefore + 1);
   assert.equal(ent.passes.event.at(-1).creditsRemaining, 6);
-  assert.equal(ent.passes.event.at(-1).boundDate, null);
+  assert.equal(ent.passes.event.at(-1).dailyCap, null);
+  assert.equal(ent.dayReport.event, true);
+  assert.equal(ent.dayReport.anyDate, true);
   assert.equal(ent.unlimited, false);
   assert.equal(getRiderById('buyer').plan, null);
 

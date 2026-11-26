@@ -133,45 +133,35 @@ test('admin create stores the credits argument as the balance', async () => {
   assert.equal((await zero.json()).rider.reportCredits, 0);
 });
 
-test('an event pass is one calendar day of 6, bound on first use', () => {
+test('an event pass is 6 credits that can be spent across days', () => {
   const id = 'event-rider';
   db.createRider({ id, firstName: 'Ev', lastName: 'Ent', email: 'event@example.com', passwordHash: 'x' });
   db.updateRider(id, { reportCredits: 0 });
   db.grantPass(id, 'event', { orderId: 'ord-event' });
+  const fresh = db.getEntitlement(id);
+  assert.equal(fresh.passes.event[0].dailyCap, null);
+  assert.equal(fresh.passes.event[0].maxDays, null);
+  assert.equal(fresh.passes.event[0].boundDate, undefined);
+  assert.equal(fresh.dayReport.event, true);
+  assert.equal(fresh.dayReport.season, false);
+  assert.equal(fresh.dayReport.anyDate, true);
+  assert.equal(fresh.dayReport.minimumSessions, 2);
+  assert.equal(fresh.dayReport.eventDates, undefined);
 
-  for (let i = 0; i < 6; i++) {
-    const charge = db.consumeSessionCredit(id, { sessionDate: '2026-08-01T18:30:00-04:00' });
+  for (const sessionDate of ['2026-08-01', '2026-08-01', '2026-08-02', '2026-08-03', '2026-08-03', '2026-08-04']) {
+    const charge = db.consumeSessionCredit(id, { sessionDate });
     assert.equal(charge.ok, true, charge.code);
     assert.equal(charge.source, 'event');
-    assert.equal(charge.sessionDate, '2026-08-01');
   }
-  const full = db.consumeSessionCredit(id, { sessionDate: '2026-08-01' });
-  assert.equal(full.ok, false);
-  assert.equal(full.code, 'daily_session_cap');
-  const other = db.consumeSessionCredit(id, { sessionDate: '2026-08-02' });
-  assert.equal(other.ok, false);
-  assert.equal(other.code, 'out_of_credits');
+  const spent = db.consumeSessionCredit(id, { sessionDate: '2026-08-09' });
+  assert.equal(spent.ok, false);
+  assert.equal(spent.code, 'out_of_credits');
   assert.equal(db.getRiderById(id).reportCredits, 0);
-  const ent = db.getEntitlement(id);
-  assert.equal(ent.passes.event[0].boundDate, '2026-08-01');
-  assert.equal(ent.passes.event[0].creditsRemaining, 0);
-  assert.deepEqual(ent.dayReport.eventDates, ['2026-08-01']);
-  assert.equal(ent.dayReport.season, false);
-  assert.equal(db.dayReportAccess(id, '2026-08-01').ok, true);
-  assert.equal(db.dayReportAccess(id, '2026-08-02').code, 'day_report_not_included');
-});
-
-test('a second session on an event day is refused while credits remain on that pass for a different date', () => {
-  const id = 'event-locked';
-  db.createRider({ id, firstName: 'Lock', lastName: 'Ed', email: 'locked@example.com', passwordHash: 'x' });
-  db.updateRider(id, { reportCredits: 0 });
-  db.grantPass(id, 'event');
-  assert.equal(db.consumeSessionCredit(id, { sessionDate: '2026-09-01' }).ok, true);
-  const moved = db.consumeSessionCredit(id, { sessionDate: '2026-09-02' });
-  assert.equal(moved.ok, false);
-  assert.equal(moved.code, 'event_day_locked');
-  assert.equal(moved.boundDate, '2026-09-01');
-  assert.equal(db.getEntitlement(id).passes.event[0].creditsRemaining, 5);
+  assert.equal(db.getEntitlement(id).passes.event[0].creditsRemaining, 0);
+  assert.equal(db.getEntitlement(id).dayReport.included, true);
+  assert.equal(db.dayReportAccess(id, '2026-08-01', 2).ok, true);
+  assert.equal(db.dayReportAccess(id, '2026-08-09', 2).ok, true);
+  assert.equal(db.dayReportAccess(id, '2026-08-01', 1).code, 'day_report_needs_multiple_sessions');
 });
 
 test('season pass is 8 event days of at most 6, not a 48-credit wallet', () => {
@@ -187,6 +177,8 @@ test('season pass is 8 event days of at most 6, not a 48-credit wallet', () => {
   assert.equal(ent.passes.season[0].creditsRemaining, 48);
   assert.equal(ent.passes.season[0].maxDays, 8);
   assert.equal(ent.dayReport.anyDate, true);
+  assert.equal(ent.dayReport.event, false);
+  assert.equal(ent.dayReport.minimumSessions, 2);
 
   for (let d = 1; d <= 8; d++) {
     const charge = db.consumeSessionCredit(id, { sessionDate: day(d) });
@@ -222,24 +214,22 @@ test('single credits have no daily cap and are not used before a season day', ()
 
   const first = db.consumeSessionCredit(id, { sessionDate: '2026-10-01' });
   assert.equal(first.source, 'season');
-  assert.equal(db.getEntitlement(id).passes.event[0].boundDate, null);
   assert.equal(db.getRiderById(id).reportCredits, 1);
+  assert.equal(db.getEntitlement(id).passes.event[0].creditsRemaining, 6);
 
   for (let i = 0; i < 5; i++) db.consumeSessionCredit(id, { sessionDate: '2026-10-01' });
   const seventh = db.consumeSessionCredit(id, { sessionDate: '2026-10-01' });
-  assert.equal(seventh.source, 'flex');
-  assert.equal(db.getEntitlement(id).passes.event[0].boundDate, null);
-  assert.equal(db.getRiderById(id).reportCredits, 0);
-
-  const capped = db.consumeSessionCredit(id, { sessionDate: '2026-10-01' });
-  assert.equal(capped.code, 'daily_session_cap');
+  assert.equal(seventh.source, 'event');
+  assert.equal(db.getRiderById(id).reportCredits, 1);
+  assert.equal(db.getEntitlement(id).passes.event[0].creditsRemaining, 5);
 
   for (let d = 2; d <= 8; d++) {
     assert.equal(db.consumeSessionCredit(id, { sessionDate: `2026-10-${String(d).padStart(2, '0')}` }).source, 'season');
   }
   const extraDay = db.consumeSessionCredit(id, { sessionDate: '2026-10-09' });
   assert.equal(extraDay.source, 'event');
-  assert.equal(db.getEntitlement(id).passes.event[0].boundDate, '2026-10-09');
+  assert.equal(db.getEntitlement(id).passes.event[0].creditsRemaining, 4);
+  assert.equal(db.getRiderById(id).reportCredits, 1);
 });
 
 test('seven single credits can be used on one day', () => {
@@ -267,7 +257,6 @@ test('a paid session is not charged again, and a refund restores an event day', 
   const charge = db.consumeSessionCredit(id, { sessionDate: '2026-12-01', sessionId: 'refund-session' });
   assert.equal(charge.source, 'event');
   assert.equal(Number(db.getSessionById('refund-session').creditConsumed), 1);
-  assert.equal(db.getEntitlement(id).passes.event[0].boundDate, '2026-12-01');
   assert.equal(db.getEntitlement(id).passes.event[0].creditsRemaining, 5);
 
   const again = db.consumeSessionCredit(id, { sessionDate: '2026-12-01', sessionId: 'refund-session' });
@@ -277,7 +266,6 @@ test('a paid session is not charged again, and a refund restores an event day', 
   db.refundSessionCredit(id, charge);
   const restored = db.getEntitlement(id);
   assert.equal(restored.passes.event[0].creditsRemaining, 6);
-  assert.equal(restored.passes.event[0].boundDate, null);
   assert.equal(restored.reportsGenerated, 0);
 });
 
@@ -289,6 +277,10 @@ test('grandfathered plan=season stays unlimited with no credits', () => {
   assert.equal(ent.unlimited, true);
   assert.equal(ent.canGenerate, true);
   assert.equal(ent.dayReport.anyDate, true);
+  assert.equal(ent.dayReport.included, true);
+  assert.equal(ent.dayReport.minimumSessions, 2);
+  assert.equal(db.dayReportAccess(id, '2026-06-15', 1).code, 'day_report_needs_multiple_sessions');
+  assert.equal(db.dayReportAccess(id, '2026-06-15', 2).ok, true);
   const charge = db.consumeSessionCredit(id, { sessionDate: '2026-06-15' });
   assert.equal(charge.source, 'unlimited');
   assert.equal(db.getRiderById(id).reportCredits, 0);
@@ -369,7 +361,34 @@ test('saving a session spends one credit and the PDF does not spend another', as
   assert.equal(deniedBody.code, 'day_report_not_included');
   assert.equal(deniedBody.paywall, true);
 
-  db.grantPass(id, 'season');
+  db.grantPass(id, 'event');
+  const tooFew = await fetch(`${base}/api/sessions/day-report`, {
+    method: 'POST',
+    headers: auth,
+    body: JSON.stringify({ date: '2026-07-04' }),
+  });
+  const tooFewBody = await tooFew.json();
+  assert.equal(tooFew.status, 400);
+  assert.equal(tooFewBody.code, 'day_report_needs_multiple_sessions');
+  assert.equal(tooFewBody.paywall, false);
+  assert.equal(tooFewBody.sessionCount, 1);
+  assert.equal(tooFewBody.minimumSessions, 2);
+
+  const emptyDay = await fetch(`${base}/api/sessions/day-report`, {
+    method: 'POST',
+    headers: auth,
+    body: JSON.stringify({ date: '2026-07-05' }),
+  });
+  assert.equal(emptyDay.status, 400);
+  assert.equal((await emptyDay.json()).code, 'day_report_needs_multiple_sessions');
+
+  db.createSession({
+    id: 'http-second',
+    riderId: id,
+    date: '2026-07-04',
+    name: 'Second',
+    analysisData: { summary: { trackName: 'Test', sessionDate: '2026-07-04' }, laps: [{ lap: 1, time: 91 }], lapStats: { count: 1, best: 91 } },
+  });
   const allowed = await fetch(`${base}/api/sessions/day-report`, {
     method: 'POST',
     headers: auth,
@@ -378,8 +397,10 @@ test('saving a session spends one credit and the PDF does not spend another', as
   assert.equal(allowed.status, 200);
   assert.equal(allowed.headers.get('content-type'), 'application/pdf');
   const entitlement = await (await fetch(`${base}/api/sessions/entitlement`, { headers: auth })).json();
-  assert.equal(entitlement.entitlement.dayReport.season, true);
+  assert.equal(entitlement.entitlement.dayReport.event, true);
+  assert.equal(entitlement.entitlement.dayReport.season, false);
   assert.equal(entitlement.entitlement.dayReport.anyDate, true);
+  assert.equal(entitlement.entitlement.dayReport.minimumSessions, 2);
   assert.equal(entitlement.entitlement.unlimited, false);
 });
 

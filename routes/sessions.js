@@ -1,7 +1,7 @@
 import express from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { getSessionsByRider, getSessionById, createSessionData, deleteSession, getEntitlement, consumeSessionCredit, planSessionCharge, getRiderById, dayReportAccess } from '../lib/db.js';
-import { denialPayload, normalizeSessionDay } from '../lib/pricing.js';
+import { dayReportTooFewPayload, denialPayload, normalizeSessionDay } from '../lib/pricing.js';
 import { backfillTrackMap, hasTrackMap } from '../lib/trackMapBackfill.js';
 import { analyzeCSV } from '../lib/analyzer.js';
 import { generateReport } from '../lib/reportGenerator.js';
@@ -196,7 +196,10 @@ router.post('/:id/report/preview', requireAuth, (req, res) => {
 });
 
 // ── Day Progress ──────────────────────────────────────────────────────────────
-// POST /api/sessions/day-report — generates a Day Progress PDF for a given date
+// POST /api/sessions/day-report — end-of-day summary for a date with 2 or more
+// saved sessions. The PDF orders those sessions and compares each best lap
+// with the session before it. Event Pass, Season Pass, and grandfathered
+// unlimited plans only.
 router.post('/day-report', requireAuth, async (req, res) => {
   try {
     const { date, riderName, bikeName } = req.body;
@@ -209,12 +212,14 @@ router.post('/day-report', requireAuth, async (req, res) => {
         : null;
       return sd === date || csd === date;
     });
-    if (daySessions.length === 0) return res.status(404).json({ error: 'No sessions found for that date' });
-
-    // Included for a Season Pass (any date) or an Event Pass bound to this date.
-    // Flexible credits alone do not include it. The portal turns this 402 into an upsell.
-    const access = dayReportAccess(req.riderId, date);
+    // Event Pass, Season Pass, and grandfathered unlimited plans include this
+    // summary on any date. Flexible credits do not. A pass holder still needs
+    // two saved sessions on the date. The portal turns not_included into an upsell.
+    const access = dayReportAccess(req.riderId, date, daySessions.length);
     if (!access.ok) {
+      if (access.code === 'day_report_needs_multiple_sessions') {
+        return res.status(400).json(dayReportTooFewPayload(access.entitlement, access.sessionCount, date));
+      }
       return res.status(402).json(denialPayload(access.code, access.entitlement, access));
     }
 
